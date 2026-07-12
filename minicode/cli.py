@@ -130,11 +130,41 @@ def _print_tool_call(name: str, tool_input: dict) -> None:
     console.print(f"  [cyan]> {name}[/cyan][dim]({str(tool_input)[:120]})[/dim]")
 
 
+GOAL_DONE_MARK = "<DONE>"
+GOAL_MAX_ROUNDS = 30
+
+
+def run_goal_mode(agent: Agent, goal: str, max_rounds: int = GOAL_MAX_ROUNDS) -> bool:
+    """goal 模式（M9f）：给定目标自主循环到完成，不等用户输入。
+
+    机制：第一轮下达目标；之后每轮自动注入"继续"提示，直到模型输出
+    完成标记或达到轮数上限。这不是新的循环——只是把"用户说继续"这个
+    动作自动化了，复用 run_turn 不动任何核心代码。返回是否完成。
+    """
+    first = (
+        f"目标：{goal}\n"
+        f"请自主完成这个目标。全部完成并验证后，在回复末尾单独输出 {GOAL_DONE_MARK}。"
+    )
+    for round_no in range(1, max_rounds + 1):
+        prompt = first if round_no == 1 else (
+            f"继续完成目标。如果目标已全部完成并验证，在回复末尾单独输出 {GOAL_DONE_MARK}。"
+        )
+        console.print(f"[dim]—— goal 模式 第 {round_no} 轮 ——[/dim]")
+        reply = agent.run_turn(prompt)
+        console.print(Markdown(reply.replace(GOAL_DONE_MARK, "")))
+        if GOAL_DONE_MARK in reply:
+            console.print("[green]✔ 目标完成[/green]")
+            return True
+    console.print(f"[yellow]达到 {max_rounds} 轮上限，目标未确认完成[/yellow]")
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="minicode")
     parser.add_argument("--tier", default=DEFAULT_TIER, choices=list(TIER_MODELS), help="模型档位")
     parser.add_argument("--mode", default="default", choices=list(MODES), help="权限模式")
     parser.add_argument("--resume", action="store_true", help="恢复最近一次会话")
+    parser.add_argument("--goal", help="goal 模式：给定目标自主执行到完成（建议配合 --mode accept-edits）")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -166,6 +196,12 @@ def main() -> None:
         tools=TOOLS + mcp_tools,
     )
     agent.on_compact = lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]")
+
+    if args.goal:
+        if args.mode == "default":
+            console.print("[dim]提示：goal 模式建议配合 --mode accept-edits，否则每次写操作都会停下等确认[/dim]")
+        run_goal_mode(agent, args.goal)
+        return
 
     if args.resume:
         restored = session.load_latest()

@@ -13,6 +13,7 @@ from minicode.tools.list_files import list_files_tool
 from minicode.tools.read_file import read_file_tool
 from minicode.tools.skill import skill_tool
 from minicode.tools.task import task_tool
+from minicode.tools.todo import todo_tool
 from minicode.tools.write_file import write_file_tool
 
 TOOLS: list[Tool] = [
@@ -25,6 +26,7 @@ TOOLS: list[Tool] = [
     bash_tool,
     task_tool,
     skill_tool,
+    todo_tool,
 ]
 
 _TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}

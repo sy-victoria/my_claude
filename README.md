@@ -26,4 +26,8 @@ uv run minicode
 
 ## 当前状态
 
-尚未开始实现。执行者请读 CLAUDE.md 后从 `docs/00-roadmap.md` 的 M0 开始。
+**全部 10 个里程碑（M0~M9 含 6 个 M9 扩展）已完成**，100 个测试全绿，每个里程碑都经过真实 API 验收。
+
+已实现的能力：agent 循环、10 个工具（文件/搜索/bash/子agent/skill/todo）、三档权限系统、系统提示词与 AGENT.md 项目记忆、上下文自动压缩、流式终端（slash 命令/会话恢复/趣味状态词）、skill 系统（渐进式披露）、plan mode、手写 MCP 客户端、goal 无人值守模式、hooks。
+
+学习路径：按编号顺序阅读 `docs/devlog/`（每篇都有"跟着学"代码导读），想自己动手试玩看 `docs/03-testing-guide.md`。

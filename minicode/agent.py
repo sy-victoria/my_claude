@@ -27,6 +27,7 @@ import anthropic
 
 from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
 from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary, split_for_compaction
+from minicode.hooks import load_hooks, run_hooks
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
 from minicode.tools import TOOLS
@@ -92,6 +93,8 @@ class Agent:
         self.max_loops = max_loops
         self.plan_mode = False
         self._full_tools = self.tools  # plan mode 退出时恢复用
+        # 用户配置的工具前后钩子（M9c），启动时加载一次
+        self.hooks = load_hooks()
         # system prompt 在会话开始时组装一次（含 cwd/日期/项目记忆），之后
         # 每次请求都通过 system 参数携带——它不进 messages，所以永远不会
         # 被当成对话历史，也不会被未来的 compaction（M6）压缩掉。
@@ -241,10 +244,16 @@ class Agent:
         if not allowed:
             return deny_reason
 
+        # pre_tool hook（M9c）：用户配置的前置校验，非零退出阻止执行。
+        hook_ok, hook_reason = run_hooks(self.hooks, "pre_tool", name, tool_input)
+        if not hook_ok:
+            return f"操作被 pre_tool hook 阻止：{hook_reason}"
+
         try:
             result = tool.run(tool_input)
             if name == "read_file" and not result.startswith("错误"):
                 self._read_files.add(Path(tool_input.get("path", "")).resolve())
+            run_hooks(self.hooks, "post_tool", name, tool_input)
             return result
         except Exception as exc:
             # 工具报错不能让整个 agent 崩溃：把错误信息当成一条 tool_result

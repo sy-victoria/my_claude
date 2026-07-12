@@ -72,6 +72,14 @@ uv run --project ~/coding-agent minicode
 - 模型回复到一半按 `Ctrl+C` —— 应该回到输入提示符而不是退出程序
 - 聊几轮后 `exit`，然后 `uv run --project ~/coding-agent minicode --resume` —— 问它上次聊了什么
 
+**M9 能力（全部扩展）：**
+- **skill**：项目里建 `.minicode/skills/`（可参考 coding-agent 仓库自带的 commit skill），然后不打斜杠、只说"帮我提交代码"—— 观察模型自主调用 `skill(commit)`；也可以直接 `/commit 补充要求`
+- **plan mode**：`/plan on` 后让它改文件 —— 观察它只出方案改不了（甚至会尝试绕过然后失败，很有意思）；`/plan off` 后说"批准了"
+- **MCP**：项目里建 `.minicode/mcp.json` 指向 `tests/mini_mcp_server.py`（配置格式见 `minicode/mcp_client.py` 顶部注释），问它"用加法工具算 123+456"
+- **todo**：给一个 3 步以上的任务 —— 观察 ☐/◐/☑ 任务清单的实时流转
+- **goal 模式**：`uv run --project ~/coding-agent minicode --mode accept-edits --goal "创建一个xxx并测试"` —— 无人值守跑完
+- **hooks**：项目里建 `.minicode/hooks.json`（格式见 `minicode/hooks.py` 顶部注释），比如给 write_file 配个审计日志 post hook
+
 **观察要点（比"能不能跑通"更重要）：**
 - 每次 `> tool: xxx(...)` 日志：模型选的工具对吗？参数合理吗？
 - 出错之后的下一步：模型是重复犯错还是根据错误信息调整了做法？

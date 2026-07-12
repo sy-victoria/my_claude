@@ -16,7 +16,10 @@ def test_plan_mode_swaps_to_readonly_tools_and_back():
     agent.set_plan_mode(True)
     plan_names = {t.name for t in agent.tools}
 
-    assert plan_names == {t for t in full_names if t in ("read_file", "list_files", "glob", "grep", "task", "skill")}
+    assert plan_names == {
+        t for t in full_names
+        if t in ("read_file", "list_files", "glob", "grep", "task", "skill", "todo_write")
+    }
     assert "edit_file" not in plan_names
     assert "bash" not in plan_names
     assert Agent.PLAN_MODE_PROMPT.strip() in agent.system_prompt
