@@ -255,7 +255,7 @@
 
 ### M9e — Skill 系统（复现 Claude Code 的 Agent Skills / 斜杠命令）
 
-- [ ] 已完成
+- [x] 已完成
 
 **实现清单**：
 1. skill 的形态：一个目录一个 skill，目录内 `SKILL.md` = YAML frontmatter + markdown 正文

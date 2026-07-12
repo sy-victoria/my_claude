@@ -16,7 +16,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.spinner import Spinner
 
-from minicode import session
+from minicode import session, skills
 from minicode.agent import Agent
 from minicode.config import DEFAULT_TIER, TIER_MODELS, resolve_model
 from minicode.permissions import MODES, PermissionManager
@@ -71,6 +71,21 @@ def handle_slash(command: str, agent: Agent) -> str:
         agent.model = resolve_model(args[0])
         return f"模型已切换为 {args[0]} 档位（{agent.model}），下一次请求生效。"
     return f"未知命令 {name}，输入 /help 查看可用命令。"
+
+
+def resolve_skill_input(user_input: str) -> str | None:
+    """如果输入是 /skill名 [参数]，渲染 skill 正文作为本轮用户消息返回。
+
+    这是 skill 的"用户触发"路径：/commit 修复登录bug -> commit skill 的
+    正文（$ARGUMENTS 已替换为"修复登录bug"）。不是 skill 则返回 None。
+    """
+    parts = user_input.split(maxsplit=1)
+    name = parts[0][1:]
+    found = skills.discover_skills().get(name)
+    if found is None:
+        return None
+    arguments = parts[1] if len(parts) > 1 else ""
+    return skills.render_skill(found, arguments)
 
 
 def _run_one_turn(agent: Agent, user_input: str) -> None:
@@ -157,8 +172,16 @@ def main() -> None:
         if not user_input:
             continue
         if user_input.startswith("/"):
-            console.print(handle_slash(user_input, agent))
-            continue
+            # 先查内置命令，再查 skill（/commit 这类），都没有才报未知
+            builtin = {"/help", "/clear", "/compact", "/cost", "/mode", "/model"}
+            if user_input.split()[0] in builtin:
+                console.print(handle_slash(user_input, agent))
+                continue
+            rendered = resolve_skill_input(user_input)
+            if rendered is None:
+                console.print(handle_slash(user_input, agent))  # 输出"未知命令"
+                continue
+            user_input = rendered  # skill 正文作为本轮用户消息，走正常对话
 
         _run_one_turn(agent, user_input)
         session.save(session_path, agent.messages)

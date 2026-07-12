@@ -107,11 +107,31 @@ def _project_memory(cwd: Path) -> str | None:
 {content}"""
 
 
+def _skills_section(cwd: Path) -> str | None:
+    """skill 清单区块（M9e，渐进式披露的"目录"部分）。
+
+    只注入每个 skill 的 name + description，正文在模型调用 skill 工具时
+    才加载——skill 数量再多，这里的闲置成本也只是每个一行。
+    """
+    from minicode import skills  # 局部导入，保持模块依赖单向
+
+    found = skills.discover_skills(cwd)
+    if not found:
+        return None
+    return (
+        "可用技能（skill）清单如下。当用户的任务匹配某个 skill 的用途时，"
+        "先用 skill 工具加载它的操作指引再执行：\n" + skills.skills_index(found)
+    )
+
+
 def build_system_prompt(cwd: Path | None = None) -> str:
-    """组装完整的 system prompt：静态部分 + 环境区块 + 项目记忆（若有）。"""
+    """组装完整的 system prompt：静态部分 + 环境区块 + 项目记忆 + skill 清单。"""
     cwd = cwd or Path.cwd()
     sections = [_IDENTITY, _STYLE, _TOOL_GUIDE, _SAFETY, _environment_block(cwd)]
     memory = _project_memory(cwd)
     if memory is not None:
         sections.append(memory)
+    skills_section = _skills_section(cwd)
+    if skills_section is not None:
+        sections.append(skills_section)
     return "\n\n".join(sections)
