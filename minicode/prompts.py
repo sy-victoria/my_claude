@@ -48,8 +48,11 @@ _STYLE = """\
 # "怎么用我"，这里说的是"什么场景选谁"——两层配合，减少选错工具的概率。
 _TOOL_GUIDE = """\
 工具选择：
-- 看目录结构用 list_files；看文件内容用 read_file；改文件用 edit_file
-- edit_file 之前必须先 read_file 同一个文件
+- 找文件名用 glob；找文件内容用 grep；看目录一层结构用 list_files；
+  看完整文件内容用 read_file
+- 局部修改文件用 edit_file（之前必须先 read_file 同一个文件）；
+  创建新文件或整体重写用 write_file
+- 重命名/修改函数前，先 grep 找出定义和所有引用，逐个处理
 - bash 用于运行代码、跑测试、git 操作；能用只读工具完成的事不要用 bash"""
 
 # 安全约束：与权限系统（permissions.py）互为补充——权限系统是机制上的

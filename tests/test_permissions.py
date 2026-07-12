@@ -127,6 +127,8 @@ def test_denied_tool_result_reaches_model(tmp_path):
     ]
     manager = PermissionManager(mode="default", ask_user=lambda name, inp: "n")
     agent = Agent(client=FakeMessagesAPI(responses), permissions=manager)
+    # 本测试只关心权限拒绝，预置"已读"状态绕过 M5 的读后编辑约束。
+    agent._read_files.add(target.resolve())
 
     reply = agent.run_turn("把 a.txt 改掉")
 
@@ -150,6 +152,7 @@ def test_yolo_mode_executes_write_without_asking(tmp_path):
     asked = []
     manager = PermissionManager(mode="yolo", ask_user=lambda name, inp: asked.append(name) or "n")
     agent = Agent(client=FakeMessagesAPI(responses), permissions=manager)
+    agent._read_files.add(target.resolve())
 
     agent.run_turn("把 a.txt 改掉")
 

@@ -20,6 +20,7 @@ agent 的本质是「LLM + 工具 + 循环」（详见 docs/01-architecture.md �
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import anthropic
@@ -69,6 +70,10 @@ class Agent:
         # 每次请求都通过 system 参数携带——它不进 messages，所以永远不会
         # 被当成对话历史，也不会被未来的 compaction（M6）压缩掉。
         self.system_prompt = build_system_prompt()
+        # 已读文件集合：edit_file 修改已存在的文件前，必须先 read_file 过它
+        # （M1 验收时发现模型"自发"先读，但不能依赖模型的好习惯——这是
+        # Claude Code 的真实硬约束，防止模型凭想象改文件）。
+        self._read_files: set[Path] = set()
 
     def run_turn(self, user_input: str) -> str:
         """处理一轮用户输入，驱动循环直到模型给出最终文本回复。
@@ -114,13 +119,27 @@ class Agent:
         if tool is None:
             return f"错误：未知工具 {name}"
 
+        # 读后编辑约束：这条策略需要跨工具的会话状态（谁被读过），所以放在
+        # agent 层而不是工具内部。放在权限检查之前——注定失败的调用没必要
+        # 再去打扰用户确认。
+        if name == "edit_file" and tool_input.get("old_str"):
+            target = Path(tool_input.get("path", "")).resolve()
+            if target.exists() and target not in self._read_files:
+                return (
+                    f"错误：编辑前必须先读取文件。请先用 read_file 读取 "
+                    f"{tool_input.get('path')} 的当前内容，再进行编辑。"
+                )
+
         # 所有工具执行前统一过权限守门人——工具自己不做权限判断。
         allowed, deny_reason = self.permissions.check(tool, tool_input)
         if not allowed:
             return deny_reason
 
         try:
-            return tool.run(tool_input)
+            result = tool.run(tool_input)
+            if name == "read_file" and not result.startswith("错误"):
+                self._read_files.add(Path(tool_input.get("path", "")).resolve())
+            return result
         except Exception as exc:
             # 工具报错不能让整个 agent 崩溃：把错误信息当成一条 tool_result
             # 返回给模型，模型看得懂错误、通常会自己调整下一步操作。
