@@ -29,7 +29,8 @@ from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
 from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary, split_for_compaction
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
-from minicode.tools import TOOLS, get_tool
+from minicode.tools import TOOLS
+from minicode.tools.base import Tool
 
 # 工具调用时的回调：(工具名, 工具输入) -> None，CLI 用它打印调用日志。
 ToolCallHook = Callable[[str, dict[str, Any]], None]
@@ -54,6 +55,8 @@ class Agent:
         client: _MessagesClient | None = None,
         on_tool_call: ToolCallHook | None = None,
         permissions: PermissionManager | None = None,
+        tools: list[Tool] | None = None,
+        max_loops: int | None = None,
     ) -> None:
         if client is not None:
             self._messages_api = client
@@ -67,6 +70,12 @@ class Agent:
         self.messages: list[dict[str, Any]] = []
         self.on_tool_call = on_tool_call
         self.permissions = permissions or PermissionManager(mode="default")
+        # 工具集可定制：主 agent 用全量 TOOLS；子 agent（M7 task 工具派生）
+        # 只拿到只读子集，且不含 task 自身——防止递归派生。
+        self.tools = tools if tools is not None else TOOLS
+        self._tools_by_name = {t.name: t for t in self.tools}
+        # 单轮对话内的最大循环次数（子 agent 用，防失控）；None = 不限制。
+        self.max_loops = max_loops
         # system prompt 在会话开始时组装一次（含 cwd/日期/项目记忆），之后
         # 每次请求都通过 system 参数携带——它不进 messages，所以永远不会
         # 被当成对话历史，也不会被未来的 compaction（M6）压缩掉。
@@ -92,12 +101,16 @@ class Agent:
 
         self.messages.append({"role": "user", "content": user_input})
 
+        loops = 0
         while True:
+            loops += 1
+            if self.max_loops is not None and loops > self.max_loops:
+                return f"[已达到最大循环轮数 {self.max_loops}，任务提前结束]"
             response = self._messages_api.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 system=self.system_prompt,
-                tools=[tool.to_api_schema() for tool in TOOLS],
+                tools=[tool.to_api_schema() for tool in self.tools],
                 messages=self.messages,
             )
             self.context.record(response)
@@ -152,7 +165,7 @@ class Agent:
         if self.on_tool_call:
             self.on_tool_call(name, tool_input)
 
-        tool = get_tool(name)
+        tool = self._tools_by_name.get(name)
         if tool is None:
             return f"错误：未知工具 {name}"
 

@@ -11,6 +11,7 @@ from minicode.tools.glob_files import glob_tool
 from minicode.tools.grep_files import grep_tool
 from minicode.tools.list_files import list_files_tool
 from minicode.tools.read_file import read_file_tool
+from minicode.tools.task import task_tool
 from minicode.tools.write_file import write_file_tool
 
 TOOLS: list[Tool] = [
@@ -21,6 +22,7 @@ TOOLS: list[Tool] = [
     edit_file_tool,
     write_file_tool,
     bash_tool,
+    task_tool,
 ]
 
 _TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
