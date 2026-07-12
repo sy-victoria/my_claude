@@ -6,11 +6,14 @@
 
 from pathlib import Path
 
+from minicode import config
 from minicode.tools.base import Tool
 
 
 def _run(tool_input: dict) -> str:
     path = tool_input["path"]
+    offset = int(tool_input.get("offset") or 1)  # 1-based 起始行号
+    limit = int(tool_input.get("limit") or config.READ_MAX_LINES)
     p = Path(path)
 
     if not p.exists():
@@ -27,7 +30,17 @@ def _run(tool_input: dict) -> str:
         return "（空文件）"
 
     lines = text.splitlines()
-    return "\n".join(f"{i + 1}\t{line}" for i, line in enumerate(lines))
+    total = len(lines)
+    window = lines[offset - 1 : offset - 1 + limit]
+    if not window:
+        return f"错误：offset={offset} 超出文件范围（共 {total} 行）"
+
+    body = "\n".join(f"{offset + i}\t{line}" for i, line in enumerate(window))
+    shown_end = offset + len(window) - 1
+    if offset > 1 or shown_end < total:
+        # 分页提示也是给模型的导航信息：告诉它还有哪些部分没读、怎么读。
+        body += f"\n[文件共 {total} 行，本次显示第 {offset}~{shown_end} 行；其余部分用 offset/limit 参数读取]"
+    return body
 
 
 read_file_tool = Tool(
@@ -42,6 +55,8 @@ read_file_tool = Tool(
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "要读取的文件路径"},
+            "offset": {"type": "integer", "description": "起始行号（1-based），默认 1；用于分页读取大文件"},
+            "limit": {"type": "integer", "description": "最多读取的行数，默认 500"},
         },
         "required": ["path"],
     },

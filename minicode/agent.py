@@ -26,6 +26,7 @@ from typing import Any, Callable, Protocol
 import anthropic
 
 from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
+from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary, split_for_compaction
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
 from minicode.tools import TOOLS, get_tool
@@ -74,6 +75,9 @@ class Agent:
         # （M1 验收时发现模型"自发"先读，但不能依赖模型的好习惯——这是
         # Claude Code 的真实硬约束，防止模型凭想象改文件）。
         self._read_files: set[Path] = set()
+        self.context = ContextTracker()
+        # compaction 发生时的通知回调（CLI 用它提示用户），(压缩前消息数, 压缩后消息数)
+        self.on_compact: Callable[[int, int], None] | None = None
 
     def run_turn(self, user_input: str) -> str:
         """处理一轮用户输入，驱动循环直到模型给出最终文本回复。
@@ -81,6 +85,11 @@ class Agent:
         返回模型最后一次回复里的纯文本，供 CLI 打印。中间发生的所有工具
         调用都会被记录进 self.messages，调用方不需要关心循环了几轮。
         """
+        # 在轮次边界检查是否需要压缩：此刻 messages 一定以完整的
+        # assistant 回复结尾，不会把进行到一半的工具调用链压断。
+        if self.context.should_compact():
+            self.compact()
+
         self.messages.append({"role": "user", "content": user_input})
 
         while True:
@@ -91,6 +100,7 @@ class Agent:
                 tools=[tool.to_api_schema() for tool in TOOLS],
                 messages=self.messages,
             )
+            self.context.record(response)
             self.messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason != "tool_use":
@@ -102,6 +112,33 @@ class Agent:
                 if block.type == "tool_use"
             ]
             self.messages.append({"role": "user", "content": tool_results})
+
+    def compact(self) -> bool:
+        """把旧对话历史压缩成摘要。返回是否真的发生了压缩。
+
+        本质是"用一次 API 调用买回上下文空间"：让模型总结旧历史，用几百
+        token 的摘要替换掉可能几万 token 的原文。摘要并入保留部分的第一条
+        用户消息，维持角色交替的合法结构。
+        """
+        older, recent = split_for_compaction(self.messages)
+        if not older:
+            return False  # 只有当前一轮对话，没有可压缩的旧历史
+
+        response = self._messages_api.create(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            system="你是一个对话总结助手。",
+            messages=[*older, {"role": "user", "content": SUMMARY_INSTRUCTION}],
+        )
+        summary = self._extract_text(response.content)
+
+        before = len(self.messages)
+        self.messages = merge_summary(summary, recent)
+        # 压缩后旧的 token 计数已失真，归零等下一次响应刷新。
+        self.context.last_input_tokens = 0
+        if self.on_compact:
+            self.on_compact(before, len(self.messages))
+        return True
 
     def _run_tool_use_block(self, block: Any) -> dict[str, Any]:
         result_text = self._execute_tool(block.name, block.input)

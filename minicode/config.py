@@ -30,6 +30,14 @@ MAX_TOKENS = 8192
 BASH_TIMEOUT_SECONDS = 30
 BASH_MAX_OUTPUT_CHARS = 2000
 
+# 上下文管理（M6）。CONTEXT_WINDOW_TOKENS 按 DeepSeek 模型的窗口设置；
+# 用量超过窗口 × COMPACT_THRESHOLD 时触发 compaction。
+CONTEXT_WINDOW_TOKENS = 128_000
+COMPACT_THRESHOLD = 0.7
+
+# read_file 单次最多返回的行数（超出部分提示模型用 offset/limit 分页读取）。
+READ_MAX_LINES = 500
+
 
 def resolve_model(tier: str) -> str:
     """把档位名（"sonnet" / "opus"）解析成具体的模型名。

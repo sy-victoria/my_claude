@@ -50,6 +50,9 @@ def main() -> None:
         on_tool_call=_print_tool_call,
         permissions=PermissionManager(mode=args.mode),
     )
+    agent.on_compact = lambda before, after: print(
+        f"  ⚙ 上下文已压缩：{before} 条消息 -> {after} 条"
+    )
 
     while True:
         try:
@@ -62,9 +65,14 @@ def main() -> None:
             break
         if not user_input:
             continue
+        if user_input == "/compact":
+            compacted = agent.compact()
+            print("已手动压缩上下文。" if compacted else "对话还很短，无需压缩。")
+            continue
 
         reply = agent.run_turn(user_input)
         print(reply)
+        print(f"  [context: {agent.context.last_input_tokens} tokens]")
 
 
 if __name__ == "__main__":
