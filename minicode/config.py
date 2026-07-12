@@ -26,6 +26,10 @@ DEFAULT_TIER = "sonnet"
 
 MAX_TOKENS = 8192
 
+# bash 工具的安全参数（CLAUDE.md 第五节）：超时保护进程，截断保护上下文窗口。
+BASH_TIMEOUT_SECONDS = 30
+BASH_MAX_OUTPUT_CHARS = 2000
+
 
 def resolve_model(tier: str) -> str:
     """把档位名（"sonnet" / "opus"）解析成具体的模型名。

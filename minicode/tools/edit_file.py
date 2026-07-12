@@ -56,6 +56,7 @@ edit_file_tool = Tool(
         "错误提示调整 old_str（通常是加入更多上下文）后重试。\n"
         "如果 old_str 传空字符串且文件不存在，会创建一个内容为 new_str 的新文件。\n"
         "编辑已存在的文件前，必须先用 read_file 读取它的当前内容。"
+        "创建或修改代码之后，通常应该用 bash 工具运行它来验证结果。"
     ),
     input_schema={
         "type": "object",
