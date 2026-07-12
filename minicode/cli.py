@@ -149,11 +149,21 @@ def main() -> None:
     if args.mode == "yolo":
         console.print("[red]⚠ yolo 模式：所有工具调用不经确认直接执行[/red]")
 
+    # MCP 工具在入口加载一次（而不是在 Agent 里），混入本地工具集；
+    # agent 循环对两者一视同仁。
+    from minicode.mcp_client import load_mcp_tools
+    from minicode.tools import TOOLS
+
+    mcp_tools = load_mcp_tools()
+    if mcp_tools:
+        console.print(f"[dim]已加载 {len(mcp_tools)} 个 MCP 工具：{', '.join(t.name for t in mcp_tools)}[/dim]")
+
     agent = Agent(
         api_key=api_key,
         tier=args.tier,
         on_tool_call=_print_tool_call,
         permissions=PermissionManager(mode=args.mode),
+        tools=TOOLS + mcp_tools,
     )
     agent.on_compact = lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]")
 

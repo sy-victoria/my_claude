@@ -278,7 +278,7 @@
 
 ### M9d — MCP 客户端
 
-- [ ] 已完成
+- [x] 已完成
 
 **实现清单**：
 1. 不用现成 SDK，手写最小 MCP 客户端（教学价值最大）：读 `.minicode/mcp.json` 配置 → `subprocess.Popen` 启动 server → stdio 上跑 JSON-RPC 2.0：`initialize` 握手 → `tools/list` 拉取工具清单 → 把远程工具包装成我们的工具协议（`base.py`）混入注册表 → 模型调用时转发 `tools/call`
