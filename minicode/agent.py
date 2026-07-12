@@ -26,6 +26,7 @@ import anthropic
 
 from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
 from minicode.permissions import PermissionManager
+from minicode.prompts import build_system_prompt
 from minicode.tools import TOOLS, get_tool
 
 # 工具调用时的回调：(工具名, 工具输入) -> None，CLI 用它打印调用日志。
@@ -64,6 +65,10 @@ class Agent:
         self.messages: list[dict[str, Any]] = []
         self.on_tool_call = on_tool_call
         self.permissions = permissions or PermissionManager(mode="default")
+        # system prompt 在会话开始时组装一次（含 cwd/日期/项目记忆），之后
+        # 每次请求都通过 system 参数携带——它不进 messages，所以永远不会
+        # 被当成对话历史，也不会被未来的 compaction（M6）压缩掉。
+        self.system_prompt = build_system_prompt()
 
     def run_turn(self, user_input: str) -> str:
         """处理一轮用户输入，驱动循环直到模型给出最终文本回复。
@@ -77,6 +82,7 @@ class Agent:
             response = self._messages_api.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
+                system=self.system_prompt,
                 tools=[tool.to_api_schema() for tool in TOOLS],
                 messages=self.messages,
             )

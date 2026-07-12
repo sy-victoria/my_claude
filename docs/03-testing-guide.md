@@ -20,6 +20,7 @@ export ANTHROPIC_API_KEY=sk-xxxx
 ```bash
 cd ~/agent-playground   # 你在哪个目录启动，agent 就在哪个目录干活
 uv run --project ~/coding-agent minicode
+
 ```
 
 `--project` 参数的意思是"用 coding-agent 项目的虚拟环境来运行"，这样你人在
@@ -40,6 +41,16 @@ uv run --project ~/coding-agent minicode
 - `看看这个目录的 git 状态`（没有 git 仓库时观察它怎么处理报错）
 - `执行 sleep 60` —— 30 秒后观察超时报错
 - 在确认提示上输入 `n` 拒绝一次 —— 观察模型怎么应对被拒
+
+**M3 能力（权限）：**
+- 分别用 `--mode default`、`--mode accept-edits`、`--mode yolo` 启动，做同一件事（如创建文件），感受询问行为的差别
+- 在询问时按 `a`，然后再做一次同类操作 —— 观察白名单生效（不再询问）
+- 按 `n` 拒绝一次 bash —— 观察模型换什么姿势完成任务
+
+**M4 能力（系统提示词 + 项目记忆）：**
+- 直接问：`今天几号？我在哪个目录？` —— 应该 0 次工具调用直接答对
+- 在试验场目录建一个 `AGENT.md`，写一条规则（如"回复我时永远先说『收到老板』"），重启 agent —— 观察行为改变
+- 把 AGENT.md 删掉再重启 —— 行为恢复
 
 **观察要点（比"能不能跑通"更重要）：**
 - 每次 `> tool: xxx(...)` 日志：模型选的工具对吗？参数合理吗？

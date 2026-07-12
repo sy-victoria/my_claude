@@ -143,7 +143,7 @@
 
 ## M4 — 系统提示词 + 项目记忆
 
-- [ ] 已完成
+- [x] 已完成
 
 **目标**：agent 有正式的 system prompt，并且像 Claude Code 读 CLAUDE.md 一样，启动时自动加载项目的记忆文件。
 
