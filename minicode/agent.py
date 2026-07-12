@@ -34,6 +34,20 @@ from minicode.tools.base import Tool
 
 # 工具调用时的回调：(工具名, 工具输入) -> None，CLI 用它打印调用日志。
 ToolCallHook = Callable[[str, dict[str, Any]], None]
+# 流式文本回调：每收到一段文本增量调用一次，CLI 用它边生成边渲染。
+TextHook = Callable[[str], None]
+
+
+def _block_to_dict(block: Any) -> dict[str, Any]:
+    """把 SDK 返回的内容块转成普通 dict 再存进 messages。
+
+    两个目的：一是 messages 全程保持 JSON 可序列化（M8 的会话持久化直接
+    json.dump 即可）；二是消除对 SDK 对象类型的依赖（测试里的假响应用
+    SimpleNamespace 也能走同一条路径）。API 完全接受 dict 形式的内容块。
+    """
+    if hasattr(block, "model_dump"):
+        return block.model_dump(exclude_none=True)
+    return dict(vars(block))
 
 
 class _MessagesClient(Protocol):
@@ -88,11 +102,13 @@ class Agent:
         # compaction 发生时的通知回调（CLI 用它提示用户），(压缩前消息数, 压缩后消息数)
         self.on_compact: Callable[[int, int], None] | None = None
 
-    def run_turn(self, user_input: str) -> str:
+    def run_turn(self, user_input: str, on_text: TextHook | None = None) -> str:
         """处理一轮用户输入，驱动循环直到模型给出最终文本回复。
 
         返回模型最后一次回复里的纯文本，供 CLI 打印。中间发生的所有工具
         调用都会被记录进 self.messages，调用方不需要关心循环了几轮。
+        传入 on_text 时启用流式输出：文本增量一边生成一边回调（仅真实
+        SDK client 支持；测试用的假 client 没有 stream 方法，自动回退）。
         """
         # 在轮次边界检查是否需要压缩：此刻 messages 一定以完整的
         # assistant 回复结尾，不会把进行到一半的工具调用链压断。
@@ -106,15 +122,11 @@ class Agent:
             loops += 1
             if self.max_loops is not None and loops > self.max_loops:
                 return f"[已达到最大循环轮数 {self.max_loops}，任务提前结束]"
-            response = self._messages_api.create(
-                model=self.model,
-                max_tokens=MAX_TOKENS,
-                system=self.system_prompt,
-                tools=[tool.to_api_schema() for tool in self.tools],
-                messages=self.messages,
-            )
+            response = self._request(on_text)
             self.context.record(response)
-            self.messages.append({"role": "assistant", "content": response.content})
+            self.messages.append(
+                {"role": "assistant", "content": [_block_to_dict(b) for b in response.content]}
+            )
 
             if response.stop_reason != "tool_use":
                 return self._extract_text(response.content)
@@ -125,6 +137,22 @@ class Agent:
                 if block.type == "tool_use"
             ]
             self.messages.append({"role": "user", "content": tool_results})
+
+    def _request(self, on_text: TextHook | None) -> Any:
+        """发一次 API 请求。有 on_text 且 client 支持时走流式接口。"""
+        kwargs: dict[str, Any] = dict(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            system=self.system_prompt,
+            tools=[tool.to_api_schema() for tool in self.tools],
+            messages=self.messages,
+        )
+        if on_text is not None and hasattr(self._messages_api, "stream"):
+            with self._messages_api.stream(**kwargs) as stream:
+                for chunk in stream.text_stream:
+                    on_text(chunk)
+                return stream.get_final_message()
+        return self._messages_api.create(**kwargs)
 
     def compact(self) -> bool:
         """把旧对话历史压缩成摘要。返回是否真的发生了压缩。

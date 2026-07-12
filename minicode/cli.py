@@ -1,38 +1,115 @@
-"""终端交互入口：一个最小的 REPL，读用户输入、驱动 agent 循环、打印结果。
+"""终端交互入口：rich 渲染 + 流式输出 + slash 命令 + 会话持久化 + 中断处理。
 
-M1 阶段刻意做得很朴素（没有权限确认、没有流式输出、没有 markdown 渲染，
-这些分别是 M3/M8 的内容），只把"人和 agent 怎么对话"这条主干跑通。
+M8 之前这里是一个 print/input 的朴素 REPL；现在的结构：
+    main()            解析参数、组装 Agent、进入主循环
+    _run_one_turn()   跑一轮对话：spinner 等待、流式渲染、Ctrl+C 回滚
+    handle_slash()    所有 / 命令的分发（纯函数风格，方便测试）
 """
 
 import argparse
 import os
+import random
 import sys
-from typing import Any
 
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.spinner import Spinner
+
+from minicode import session
 from minicode.agent import Agent
-from minicode.config import DEFAULT_TIER
+from minicode.config import DEFAULT_TIER, TIER_MODELS, resolve_model
 from minicode.permissions import MODES, PermissionManager
 
-WELCOME = f"""\
-minicode —— 从零复现的 Claude Code 风格 coding agent（学习项目）
+console = Console()
 
-当前档位：{DEFAULT_TIER}（用 --tier sonnet|opus 切换）
-输入你的需求开始对话，输入 exit 或 Ctrl+D 退出。\
-"""
+# Claude Code 的灵魂彩蛋：等待模型时随机显示一个动名词。
+SPINNER_VERBS = [
+    "Musing", "Pondering", "Brewing", "Scheming", "Noodling", "Percolating",
+    "Ruminating", "Tinkering", "Vibing", "Cogitating", "Simmering", "Mulling",
+    "Marinating", "Whirring", "Conjuring", "Sketching", "Weaving", "Polishing",
+    "Hatching", "Doodling", "Daydreaming", "Wrangling",
+]
+
+HELP_TEXT = """\
+可用命令：
+  /help             显示本帮助
+  /clear            清空当前对话历史
+  /compact          手动压缩上下文
+  /cost             显示 token 用量
+  /mode <模式>      切换权限模式（default / accept-edits / yolo）
+  /model <档位>     切换模型档位（sonnet / opus）
+  exit 或 Ctrl+D    退出"""
 
 
-def _print_tool_call(name: str, tool_input: dict[str, Any]) -> None:
-    print(f"  > tool: {name}({tool_input})")
+def handle_slash(command: str, agent: Agent) -> str:
+    """处理一条 slash 命令，返回要显示给用户的文本。"""
+    parts = command.split()
+    name, args = parts[0], parts[1:]
+
+    if name == "/help":
+        return HELP_TEXT
+    if name == "/clear":
+        agent.messages.clear()
+        agent.context.last_input_tokens = 0
+        return "对话历史已清空。"
+    if name == "/compact":
+        return "已手动压缩上下文。" if agent.compact() else "对话还很短，无需压缩。"
+    if name == "/cost":
+        return (
+            f"当前上下文约 {agent.context.last_input_tokens} tokens，"
+            f"本会话累计消耗 {agent.context.cumulative_tokens} tokens。"
+        )
+    if name == "/mode":
+        if not args or args[0] not in MODES:
+            return f"用法：/mode {'|'.join(MODES)}（当前：{agent.permissions.mode}）"
+        agent.permissions.mode = args[0]
+        return f"权限模式已切换为 {args[0]}。"
+    if name == "/model":
+        if not args or args[0] not in TIER_MODELS:
+            return f"用法：/model {'|'.join(TIER_MODELS)}（当前模型：{agent.model}）"
+        agent.model = resolve_model(args[0])
+        return f"模型已切换为 {args[0]} 档位（{agent.model}），下一次请求生效。"
+    return f"未知命令 {name}，输入 /help 查看可用命令。"
+
+
+def _run_one_turn(agent: Agent, user_input: str) -> None:
+    """跑一轮对话：spinner 等首字、流式渲染 markdown、Ctrl+C 回滚。
+
+    中断回滚的原因：如果在模型回复到一半时打断，messages 会停在"有用户
+    输入、没有 assistant 回复"的非法状态，下一轮请求会因角色不交替而出错。
+    所以记录轮次开始时的消息数，中断时把本轮追加的消息全部丢弃。
+    """
+    checkpoint = len(agent.messages)
+    accumulated = ""
+    verb = random.choice(SPINNER_VERBS)
+
+    try:
+        with Live(Spinner("dots", text=f"{verb}…"), console=console, refresh_per_second=8) as live:
+            def on_text(chunk: str) -> None:
+                nonlocal accumulated
+                accumulated += chunk
+                live.update(Markdown(accumulated))
+
+            reply = agent.run_turn(user_input, on_text=on_text)
+            live.update(Markdown(reply if reply else accumulated))
+    except KeyboardInterrupt:
+        del agent.messages[checkpoint:]
+        console.print("\n[yellow](已中断，本轮输入已丢弃)[/yellow]")
+        return
+
+    console.print(f"[dim]  context: {agent.context.last_input_tokens} tokens[/dim]")
+
+
+def _print_tool_call(name: str, tool_input: dict) -> None:
+    console.print(f"  [cyan]> {name}[/cyan][dim]({str(tool_input)[:120]})[/dim]")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="minicode")
-    parser.add_argument(
-        "--tier", default=DEFAULT_TIER, choices=["sonnet", "opus"], help="模型档位"
-    )
-    parser.add_argument(
-        "--mode", default="default", choices=list(MODES), help="权限模式"
-    )
+    parser.add_argument("--tier", default=DEFAULT_TIER, choices=list(TIER_MODELS), help="模型档位")
+    parser.add_argument("--mode", default="default", choices=list(MODES), help="权限模式")
+    parser.add_argument("--resume", action="store_true", help="恢复最近一次会话")
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -40,9 +117,12 @@ def main() -> None:
         print("错误：请先设置环境变量 ANTHROPIC_API_KEY")
         sys.exit(1)
 
-    print(WELCOME)
+    console.print(
+        f"[bold]minicode[/bold] —— 从零复现的 Claude Code 风格 coding agent\n"
+        f"[dim]档位 {args.tier} · 权限 {args.mode} · /help 查看命令[/dim]"
+    )
     if args.mode == "yolo":
-        print("⚠️  yolo 模式：所有工具调用都会不经确认直接执行，请确认你在安全的目录里。")
+        console.print("[red]⚠ yolo 模式：所有工具调用不经确认直接执行[/red]")
 
     agent = Agent(
         api_key=api_key,
@@ -50,9 +130,17 @@ def main() -> None:
         on_tool_call=_print_tool_call,
         permissions=PermissionManager(mode=args.mode),
     )
-    agent.on_compact = lambda before, after: print(
-        f"  ⚙ 上下文已压缩：{before} 条消息 -> {after} 条"
-    )
+    agent.on_compact = lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]")
+
+    if args.resume:
+        restored = session.load_latest()
+        if restored:
+            agent.messages = restored
+            console.print(f"[dim]已恢复上次会话（{len(restored)} 条消息）[/dim]")
+        else:
+            console.print("[dim]没有可恢复的会话，从新对话开始[/dim]")
+
+    session_path = session.new_session_path()
 
     while True:
         try:
@@ -60,19 +148,20 @@ def main() -> None:
         except EOFError:
             print()
             break
+        except KeyboardInterrupt:
+            print()
+            continue  # 输入提示符下的 Ctrl+C 只清空当前行，不退出
 
         if user_input in ("exit", "quit"):
             break
         if not user_input:
             continue
-        if user_input == "/compact":
-            compacted = agent.compact()
-            print("已手动压缩上下文。" if compacted else "对话还很短，无需压缩。")
+        if user_input.startswith("/"):
+            console.print(handle_slash(user_input, agent))
             continue
 
-        reply = agent.run_turn(user_input)
-        print(reply)
-        print(f"  [context: {agent.context.last_input_tokens} tokens]")
+        _run_one_turn(agent, user_input)
+        session.save(session_path, agent.messages)
 
 
 if __name__ == "__main__":

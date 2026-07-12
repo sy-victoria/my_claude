@@ -66,6 +66,12 @@ uv run --project ~/coding-agent minicode
 - 在一个大点的项目里：`用 task 工具全面调查 XXX 是怎么实现的` —— 观察缩进的 `>> [sub]` 日志（子 agent 的动作）和主对话只多了一条结论
 - 对比实验：同样的调查任务不加"用 task 工具"—— 看主对话被多少中间结果塞满
 
+**M8 能力（终端体验）：**
+- 随便问个问题，观察：随机的等待状态词（Musing…）、流式输出、markdown 渲染
+- 依次试 `/help` `/cost` `/mode yolo` `/model opus` `/clear`
+- 模型回复到一半按 `Ctrl+C` —— 应该回到输入提示符而不是退出程序
+- 聊几轮后 `exit`，然后 `uv run --project ~/coding-agent minicode --resume` —— 问它上次聊了什么
+
 **观察要点（比"能不能跑通"更重要）：**
 - 每次 `> tool: xxx(...)` 日志：模型选的工具对吗？参数合理吗？
 - 出错之后的下一步：模型是重复犯错还是根据错误信息调整了做法？
