@@ -25,6 +25,7 @@ from typing import Any, Callable, Protocol
 import anthropic
 
 from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
+from minicode.permissions import PermissionManager
 from minicode.tools import TOOLS, get_tool
 
 # 工具调用时的回调：(工具名, 工具输入) -> None，CLI 用它打印调用日志。
@@ -49,6 +50,7 @@ class Agent:
         tier: str = "sonnet",
         client: _MessagesClient | None = None,
         on_tool_call: ToolCallHook | None = None,
+        permissions: PermissionManager | None = None,
     ) -> None:
         if client is not None:
             self._messages_api = client
@@ -61,6 +63,7 @@ class Agent:
         self.model = resolve_model(tier)
         self.messages: list[dict[str, Any]] = []
         self.on_tool_call = on_tool_call
+        self.permissions = permissions or PermissionManager(mode="default")
 
     def run_turn(self, user_input: str) -> str:
         """处理一轮用户输入，驱动循环直到模型给出最终文本回复。
@@ -104,6 +107,11 @@ class Agent:
         tool = get_tool(name)
         if tool is None:
             return f"错误：未知工具 {name}"
+
+        # 所有工具执行前统一过权限守门人——工具自己不做权限判断。
+        allowed, deny_reason = self.permissions.check(tool, tool_input)
+        if not allowed:
+            return deny_reason
 
         try:
             return tool.run(tool_input)

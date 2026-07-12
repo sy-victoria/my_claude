@@ -24,6 +24,11 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     run: ToolFunction
+    # 危险级别，权限系统（permissions.py）据此决定放行还是询问用户：
+    #   "read"    只读，不改变任何东西（read_file / list_files）
+    #   "write"   会修改文件（edit_file）
+    #   "execute" 会执行任意代码，危险级别最高（bash）
+    permission_level: str = "read"
 
     def to_api_schema(self) -> dict[str, Any]:
         """转换成 Anthropic `messages.create(tools=...)` 需要的格式。"""

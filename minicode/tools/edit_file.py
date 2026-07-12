@@ -71,4 +71,5 @@ edit_file_tool = Tool(
         "required": ["path", "old_str", "new_str"],
     },
     run=_run,
+    permission_level="write",
 )

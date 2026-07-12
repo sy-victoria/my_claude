@@ -11,6 +11,7 @@ from typing import Any
 
 from minicode.agent import Agent
 from minicode.config import DEFAULT_TIER
+from minicode.permissions import MODES, PermissionManager
 
 WELCOME = f"""\
 minicode —— 从零复现的 Claude Code 风格 coding agent（学习项目）
@@ -29,6 +30,9 @@ def main() -> None:
     parser.add_argument(
         "--tier", default=DEFAULT_TIER, choices=["sonnet", "opus"], help="模型档位"
     )
+    parser.add_argument(
+        "--mode", default="default", choices=list(MODES), help="权限模式"
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -37,7 +41,15 @@ def main() -> None:
         sys.exit(1)
 
     print(WELCOME)
-    agent = Agent(api_key=api_key, tier=args.tier, on_tool_call=_print_tool_call)
+    if args.mode == "yolo":
+        print("⚠️  yolo 模式：所有工具调用都会不经确认直接执行，请确认你在安全的目录里。")
+
+    agent = Agent(
+        api_key=api_key,
+        tier=args.tier,
+        on_tool_call=_print_tool_call,
+        permissions=PermissionManager(mode=args.mode),
+    )
 
     while True:
         try:

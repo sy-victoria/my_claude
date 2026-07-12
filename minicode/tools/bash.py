@@ -4,9 +4,10 @@
 刚写好的代码……但它也是最危险的工具，所以有三道防线（CLAUDE.md 第五节）：
 
     1. 危险命令黑名单：`rm -rf /`、`sudo` 等直接拒绝，连确认的机会都不给；
-    2. 用户确认：执行前在终端问一次 y/n（M3 会把这个升级成统一的权限系统，
-       这里先用一个可替换的模块级钩子 ask_user_confirmation 顶着——做成
-       可替换是为了让测试和非交互场景能注入假的确认函数）；
+    2. 用户确认：本工具声明 permission_level="execute"，由权限系统
+       （permissions.py）统一在执行前询问用户——M2 时这里曾有一个内置的
+       确认钩子，M3 起已拆除，工具只声明危险级别、不自己实现确认（策略
+       与机制分离）；
     3. 超时 + 输出截断：超时保护进程不被挂死，截断保护上下文窗口不被一次
        `cat 大文件` 塞爆。
 
@@ -34,15 +35,6 @@ BLACKLIST: list[str] = [
 ]
 
 
-def _default_confirm(command: str) -> bool:
-    answer = input(f"\n  ! agent 请求执行命令：{command}\n  允许执行吗？[y/n] ")
-    return answer.strip().lower() == "y"
-
-
-# 模块级确认钩子：CLI 交互时用上面的终端询问；测试注入 lambda 替换。
-ask_user_confirmation = _default_confirm
-
-
 def _truncate(text: str) -> str:
     limit = config.BASH_MAX_OUTPUT_CHARS
     if len(text) <= limit:
@@ -56,9 +48,6 @@ def _run(tool_input: dict) -> str:
     for banned in BLACKLIST:
         if banned in command:
             return f"错误：命令包含被禁止的操作 {banned!r}，已拒绝执行。请换一种安全的做法。"
-
-    if not ask_user_confirmation(command):
-        return "用户拒绝了本次命令执行。请不要原样重试；可以询问用户的顾虑，或改用其他方式完成任务。"
 
     try:
         proc = subprocess.run(
@@ -105,4 +94,5 @@ bash_tool = Tool(
         "required": ["command"],
     },
     run=_run,
+    permission_level="execute",
 )
