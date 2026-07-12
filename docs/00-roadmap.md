@@ -290,7 +290,7 @@
 ### 其余扩展
 
 - [ ] M9a：**todo 工具** — agent 自我规划任务清单并在终端展示进度（复现 TodoWrite）
-- [ ] M9b：**plan mode** — 切换到只读工具集 + system prompt 追加「只调研和出方案，不许修改」；用户批准方案后换回完整工具集执行（复现 Claude Code 的 plan mode）
+- [x] M9b：**plan mode** — 切换到只读工具集 + system prompt 追加「只调研和出方案，不许修改」；用户批准方案后换回完整工具集执行（复现 Claude Code 的 plan mode）
 - [ ] M9c：**hooks** — 工具执行前后运行用户配置的 shell 命令（如 edit 后自动跑 formatter），hook 非零退出可阻止工具执行
 - [ ] M9f：**goal 模式** — `minicode --goal "目标描述"`：不等用户输入，每轮结束后自动注入「继续完成目标；若已完成输出 <DONE>」，直到模型声明完成或达到轮数上限（如 30 轮）；结合 `accept-edits` 权限模式实现无人值守
 

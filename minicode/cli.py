@@ -39,6 +39,7 @@ HELP_TEXT = """\
   /cost             显示 token 用量
   /mode <模式>      切换权限模式（default / accept-edits / yolo）
   /model <档位>     切换模型档位（sonnet / opus）
+  /plan on|off      计划模式（只读调研出方案，批准后再执行）
   exit 或 Ctrl+D    退出"""
 
 
@@ -70,6 +71,15 @@ def handle_slash(command: str, agent: Agent) -> str:
             return f"用法：/model {'|'.join(TIER_MODELS)}（当前模型：{agent.model}）"
         agent.model = resolve_model(args[0])
         return f"模型已切换为 {args[0]} 档位（{agent.model}），下一次请求生效。"
+    if name == "/plan":
+        if not args or args[0] not in ("on", "off"):
+            return f"用法：/plan on|off（当前：{'on' if agent.plan_mode else 'off'}）"
+        agent.set_plan_mode(args[0] == "on")
+        return (
+            "已进入计划模式：agent 只能调研和出方案，批准后 /plan off 再执行。"
+            if agent.plan_mode
+            else "已退出计划模式，agent 恢复完整工具集。"
+        )
     return f"未知命令 {name}，输入 /help 查看可用命令。"
 
 
@@ -173,7 +183,7 @@ def main() -> None:
             continue
         if user_input.startswith("/"):
             # 先查内置命令，再查 skill（/commit 这类），都没有才报未知
-            builtin = {"/help", "/clear", "/compact", "/cost", "/mode", "/model"}
+            builtin = {"/help", "/clear", "/compact", "/cost", "/mode", "/model", "/plan"}
             if user_input.split()[0] in builtin:
                 console.print(handle_slash(user_input, agent))
                 continue

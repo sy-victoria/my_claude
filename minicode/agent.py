@@ -90,6 +90,8 @@ class Agent:
         self._tools_by_name = {t.name: t for t in self.tools}
         # 单轮对话内的最大循环次数（子 agent 用，防失控）；None = 不限制。
         self.max_loops = max_loops
+        self.plan_mode = False
+        self._full_tools = self.tools  # plan mode 退出时恢复用
         # system prompt 在会话开始时组装一次（含 cwd/日期/项目记忆），之后
         # 每次请求都通过 system 参数携带——它不进 messages，所以永远不会
         # 被当成对话历史，也不会被未来的 compaction（M6）压缩掉。
@@ -153,6 +155,32 @@ class Agent:
                     on_text(chunk)
                 return stream.get_final_message()
         return self._messages_api.create(**kwargs)
+
+    # plan mode 追加到 system prompt 的指令（M9b）。用类常量方便退出时精确移除。
+    PLAN_MODE_PROMPT = (
+        "\n\n[计划模式] 当前处于 plan mode：只允许调研和阅读，禁止任何修改。"
+        "请充分调研后给出实施方案（要改哪些文件、怎么改、有什么风险），"
+        "等待用户批准后再动手。"
+    )
+
+    def set_plan_mode(self, enabled: bool) -> None:
+        """切换 plan mode（M9b，复现 Claude Code 的 plan mode）。
+
+        双保险：工具集物理切到只读子集（结构保证，模型想改也没有写工具
+        可调），同时 system prompt 追加只读指令（行为引导，让它主动输出
+        方案而不是反复撞墙）。复用了 M7 引入的自定义工具集机制。
+        """
+        if enabled == self.plan_mode:
+            return
+        self.plan_mode = enabled
+        if enabled:
+            self._full_tools = self.tools
+            self.tools = [t for t in self.tools if t.permission_level == "read"]
+            self.system_prompt += self.PLAN_MODE_PROMPT
+        else:
+            self.tools = self._full_tools
+            self.system_prompt = self.system_prompt.replace(self.PLAN_MODE_PROMPT, "")
+        self._tools_by_name = {t.name: t for t in self.tools}
 
     def compact(self) -> bool:
         """把旧对话历史压缩成摘要。返回是否真的发生了压缩。
