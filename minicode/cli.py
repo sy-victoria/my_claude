@@ -10,6 +10,7 @@ import argparse
 import difflib
 import os
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -200,6 +201,31 @@ def resolve_skill_input(user_input: str) -> str | None:
         return None
     arguments = parts[1] if len(parts) > 1 else ""
     return skills.render_skill(found, arguments)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _render_prompt(markup: str) -> str:
+    """把带 rich 标记的提示符渲染成可以直接传给 input() 的 ANSI 字符串。
+
+    根源问题：`rich.Console.input()` 自己先把 prompt 文字 print 出来，再调用
+    不带参数的 input()。这样一来，一旦 `readline` 被 import 了（我们为 Tab
+    补全引入的），它完全不知道屏幕上已经有一段"🐳 (sonnet) > "——它以为当前
+    行是从第 0 列开始的空提示符。等它需要重绘时（退格、或者补全候选列表弹出
+    之后）就会按错误的列号去清屏/重画，把已经打印好的彩色 prompt 文字也吃掉，
+    这正是"往回退格时 (sonnet) 被吞掉"的原因。
+
+    修法：把 prompt 作为参数传给 input()，让 readline 自己管理它的宽度；
+    再用 \\001/\\002（readline 的标准约定）包住颜色转义码，告诉它这些字节
+    不占可见列数——否则 readline 会把颜色码也当成"可见字符"算进宽度，一样会错位。
+    """
+    with console.capture() as capture:
+        console.print(markup, end="")
+    ansi = capture.get()
+    if readline is None:
+        return ansi  # 没有 readline 就不存在这个问题，原样返回即可
+    return _ANSI_ESCAPE_RE.sub(lambda m: f"\001{m.group(0)}\002", ansi)
 
 
 def _setup_completion() -> None:
@@ -417,7 +443,10 @@ def main() -> None:
         try:
             # 提示符里带上当前档位，/model 切换后这里会立刻跟着变，
             # 不用额外去看 /cost 或 banner 才知道现在跑的是哪个模型。
-            user_input = console.input(f"\n[accent]{MASCOT}[/accent] [secondary]({agent.tier})[/secondary] > ").strip()
+            # 用 _render_prompt 传给 input()（而不是 console.input()），是为了
+            # 让 readline 知道这段彩色文字的真实宽度——见 _render_prompt 的注释。
+            prompt_str = _render_prompt(f"\n[accent]{MASCOT}[/accent] [secondary]({agent.tier})[/secondary] > ")
+            user_input = input(prompt_str).strip()
         except EOFError:
             print()
             break
