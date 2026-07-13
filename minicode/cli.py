@@ -7,21 +7,38 @@ M8 之前这里是一个 print/input 的朴素 REPL；现在的结构：
 """
 
 import argparse
+import difflib
 import os
 import random
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.spinner import Spinner
+from rich.theme import Theme
 
 from minicode import session, skills
 from minicode.agent import Agent
-from minicode.config import DEFAULT_TIER, TIER_MODELS, resolve_model
+from minicode.config import CONTEXT_WINDOW_TOKENS, DEFAULT_TIER, TIER_MODELS, resolve_model
 from minicode.permissions import MODES, PermissionManager
 
-console = Console()
+# 配色跟着后端走：我们接的是 DeepSeek，就用 DeepSeek 的品牌蓝，
+# 而不是 Anthropic 的橙色——终端主题应该诚实反映"这是谁的模型在跑"。
+THEME = Theme({
+    "banner": "bold #4D6BFE",     # DeepSeek 主品牌蓝，用于标题
+    "accent": "#4D6BFE",          # 深蓝：交互提示符、spinner
+    "secondary": "#8FB3FF",       # 浅蓝：次要信息（档位、上下文用量）
+    "tool": "#8FB3FF",            # 工具调用日志
+    "warn": "bold red",
+})
+console = Console(theme=THEME)
+
+# 终端里的小宠物：一头跟着 DeepSeek 品牌走的鲸鱼，等待模型时"游"在 spinner 旁边。
+MASCOT = "🐳"
 
 # Claude Code 的灵魂彩蛋：等待模型时随机显示一个动名词。
 SPINNER_VERBS = [
@@ -37,9 +54,10 @@ HELP_TEXT = """\
   /clear            清空当前对话历史
   /compact          手动压缩上下文
   /cost             显示 token 用量
-  /mode <模式>      切换权限模式（default / accept-edits / yolo）
-  /model <档位>     切换模型档位（sonnet / opus）
-  /plan on|off      计划模式（只读调研出方案，批准后再执行）
+  /mode             交互式切换权限模式（不带参数弹出列表；也可 /mode <模式> 直接切）
+  /model            交互式选择模型档位（不带参数弹出列表；也可 /model <档位> 直接切）
+  /plan             交互式切换计划模式（不带参数弹出列表；也可 /plan on|off 直接切）
+  /resume           从历史会话里选一个恢复（当前对话会被替换）
   exit 或 Ctrl+D    退出"""
 
 
@@ -68,9 +86,12 @@ def handle_slash(command: str, agent: Agent) -> str:
         return f"权限模式已切换为 {args[0]}。"
     if name == "/model":
         if not args or args[0] not in TIER_MODELS:
-            return f"用法：/model {'|'.join(TIER_MODELS)}（当前模型：{agent.model}）"
+            return f"用法：/model {'|'.join(TIER_MODELS)}（当前模型：{agent.tier}，{agent.model}）"
+        agent.tier = args[0]
         agent.model = resolve_model(args[0])
         return f"模型已切换为 {args[0]} 档位（{agent.model}），下一次请求生效。"
+    if name == "/resume":
+        return "用法：/resume（不带参数，从列表中选择要恢复的历史会话）"
     if name == "/plan":
         if not args or args[0] not in ("on", "off"):
             return f"用法：/plan on|off（当前：{'on' if agent.plan_mode else 'off'}）"
@@ -81,6 +102,82 @@ def handle_slash(command: str, agent: Agent) -> str:
             else "已退出计划模式，agent 恢复完整工具集。"
         )
     return f"未知命令 {name}，输入 /help 查看可用命令。"
+
+
+def _prompt_from_list(options: list[tuple[str, str]], current: str, question: str) -> str:
+    """通用编号选择菜单：options 是 (值, 展示文案) 列表，返回选中的值。
+
+    /model /mode /plan 三个交互式命令共用这份渲染逻辑，避免三份几乎一样的
+    代码——它们的差异只是"有哪些选项、每项怎么解释"，选择与渲染的机制相同。
+    """
+    values = [v for v, _ in options]
+    for i, (value, label) in enumerate(options, start=1):
+        mark = " [accent](当前)[/accent]" if value == current else ""
+        console.print(f"  [accent]{i}[/accent]. {label}{mark}")
+    choice = Prompt.ask(
+        question,
+        choices=[str(i) for i in range(1, len(values) + 1)],
+        default=str(values.index(current) + 1),
+        console=console,
+    )
+    return values[int(choice) - 1]
+
+
+def prompt_model_choice(agent: Agent) -> str:
+    """/model 不带参数时的交互式选择列表，返回选中的档位名。
+
+    handle_slash 保持纯函数（好测试：给定字符串输入，断言返回文本），交互式
+    读键盘这部分放在这里，只在主循环里被调用——这样"要不要弹交互菜单"这个
+    决定权在调用方，纯逻辑和 I/O 分开。
+    """
+    console.print("[secondary]可选档位：[/secondary]")
+    options = [
+        (t, f"{t}（{TIER_MODELS[t]}）· {'日常，快' if t == 'sonnet' else '重活，更强'}")
+        for t in TIER_MODELS
+    ]
+    return _prompt_from_list(options, agent.tier, "选择档位序号（回车保持不变）")
+
+
+def prompt_mode_choice(agent: Agent) -> str:
+    """/mode 不带参数时的交互式选择列表，返回选中的权限模式。"""
+    console.print("[secondary]可选权限模式：[/secondary]")
+    hints = {
+        "default": "只读放行，写文件/执行命令都要问",
+        "accept-edits": "写文件自动放行，执行命令仍要问",
+        "yolo": "全部自动放行，不询问（危险）",
+    }
+    options = [(m, f"{m} · {hints[m]}") for m in MODES]
+    return _prompt_from_list(options, agent.permissions.mode, "选择模式序号（回车保持不变）")
+
+
+def prompt_plan_choice(agent: Agent) -> str:
+    """/plan 不带参数时的交互式选择列表，返回 "on" 或 "off"。"""
+    console.print("[secondary]计划模式：[/secondary]")
+    options = [
+        ("off", "off · 正常模式，agent 可以直接修改"),
+        ("on", "on  · 只读调研出方案，不实际修改"),
+    ]
+    current = "on" if agent.plan_mode else "off"
+    return _prompt_from_list(options, current, "选择序号（回车保持不变）")
+
+
+def prompt_resume_choice() -> Path | None:
+    """/resume 的交互式会话选择列表；没有历史会话或用户取消时返回 None。"""
+    sessions = session.list_sessions()
+    if not sessions:
+        console.print("[secondary]没有可恢复的历史会话。[/secondary]")
+        return None
+    console.print("[secondary]最近的会话（新到旧）：[/secondary]")
+    for i, path in enumerate(sessions, start=1):
+        console.print(f"  [accent]{i}[/accent]. {path.stem} — {session.preview(path)}")
+    choice = Prompt.ask(
+        "选择要恢复的会话序号（回车取消）",
+        choices=[str(i) for i in range(1, len(sessions) + 1)] + [""],
+        default="",
+        show_choices=False,
+        console=console,
+    )
+    return sessions[int(choice) - 1] if choice else None
 
 
 def resolve_skill_input(user_input: str) -> str | None:
@@ -110,7 +207,11 @@ def _run_one_turn(agent: Agent, user_input: str) -> None:
     verb = random.choice(SPINNER_VERBS)
 
     try:
-        with Live(Spinner("dots", text=f"{verb}…"), console=console, refresh_per_second=8) as live:
+        with Live(
+            Spinner("dots", text=f"{MASCOT} {verb}…", style="accent"),
+            console=console,
+            refresh_per_second=8,
+        ) as live:
             def on_text(chunk: str) -> None:
                 nonlocal accumulated
                 accumulated += chunk
@@ -120,14 +221,55 @@ def _run_one_turn(agent: Agent, user_input: str) -> None:
             live.update(Markdown(reply if reply else accumulated))
     except KeyboardInterrupt:
         del agent.messages[checkpoint:]
-        console.print("\n[yellow](已中断，本轮输入已丢弃)[/yellow]")
+        console.print("\n[warn](已中断，本轮输入已丢弃)[/warn]")
         return
 
-    console.print(f"[dim]  context: {agent.context.last_input_tokens} tokens[/dim]")
+    used_pct = round(agent.context.last_input_tokens / CONTEXT_WINDOW_TOKENS * 100)
+    console.print(
+        f"[dim]  context: {agent.context.last_input_tokens} tokens（{used_pct}%）"
+        f" · {agent.tier}（{agent.model}）[/dim]"
+    )
+
+
+# 参数字典里挑一个最能代表"在干什么"的字段做单行预览，而不是把整个字典甩
+# 出来——这是 Claude Code 里 `⏺ Read(file.py)` 这种简洁风格的关键。
+_ARG_PREVIEW_KEYS = ("path", "command", "pattern", "name", "description", "goal")
+_ERROR_PREFIXES = ("错误", "工具执行出错", "操作被", "用户拒绝")
+
+
+def _preview_args(tool_input: dict) -> str:
+    for key in _ARG_PREVIEW_KEYS:
+        if key in tool_input:
+            return str(tool_input[key])[:100]
+    return str(tool_input)[:100]
 
 
 def _print_tool_call(name: str, tool_input: dict) -> None:
-    console.print(f"  [cyan]> {name}[/cyan][dim]({str(tool_input)[:120]})[/dim]")
+    console.print(f"[tool]⏺[/tool] {name}[dim]({_preview_args(tool_input)})[/dim]")
+
+
+def _print_tool_result(name: str, tool_input: dict, result: str) -> None:
+    """工具结果的一行摘要，缩进对齐在调用行下面、带 ⎿ 前缀——对应 Claude
+    Code 工具调用后紧跟的那行结果摘要，一眼看出"发生了什么"而不用把完整
+    返回值塞进对话流。edit_file 成功时改画彩色 diff，比一句"已修改"有用。
+    """
+    if name == "edit_file" and result.startswith(("已修改", "已创建新文件")):
+        _print_edit_diff(tool_input)
+        return
+    first_line = result.splitlines()[0] if result else ""
+    style = "warn" if first_line.startswith(_ERROR_PREFIXES) else "dim"
+    console.print(f"  [{style}]⎿ {first_line[:100]}[/{style}]")
+
+
+def _print_edit_diff(tool_input: dict) -> None:
+    old_str = tool_input.get("old_str", "")
+    new_str = tool_input.get("new_str", "")
+    diff = difflib.unified_diff(old_str.splitlines(), new_str.splitlines(), lineterm="", n=0)
+    for line in diff:
+        if line.startswith("+") and not line.startswith("+++"):
+            console.print(f"  [green]{line}[/green]")
+        elif line.startswith("-") and not line.startswith("---"):
+            console.print(f"  [red]{line}[/red]")
 
 
 GOAL_DONE_MARK = "<DONE>"
@@ -169,15 +311,35 @@ def main() -> None:
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("错误：请先设置环境变量 ANTHROPIC_API_KEY")
-        sys.exit(1)
+        # 首次体验友好一点：不直接报错退出，而是当场问一次。只留在这个
+        # 进程的内存里传给 Agent，不写环境变量、不落盘——CLAUDE.md red line。
+        # 想长期免输入，请按 README 把 export 写进自己的 shell 配置文件。
+        console.print(
+            "[secondary]没有检测到环境变量 ANTHROPIC_API_KEY。[/secondary]\n"
+            "[dim]去 DeepSeek 开放平台控制台生成一个 key（sk- 开头）后粘贴进来；"
+            "只在这次运行里生效，不会保存到任何文件。[/dim]"
+        )
+        try:
+            api_key = Prompt.ask("API Key", password=True, console=console)
+        except (EOFError, KeyboardInterrupt, OSError):
+            # OSError：非交互环境（管道、CI、pytest 捕获 stdin 等）读不了键盘，
+            # 跟真的按了 Ctrl+D 一样处理——没有 key 就退出，不让进程挂在这里。
+            api_key = ""
+        if not api_key:
+            console.print("[warn]未提供 API Key，退出。[/warn]")
+            sys.exit(1)
 
-    console.print(
-        f"[bold]minicode[/bold] —— 从零复现的 Claude Code 风格 coding agent\n"
-        f"[dim]档位 {args.tier} · 权限 {args.mode} · /help 查看命令[/dim]"
+    # 启动横幅仿 Claude Code：一个圆角边框把"工具名 + 当前状态"框起来，
+    # 一眼就知道启动的是 minicode（而不是被淹没在一堆日志里）。
+    banner_body = (
+        f"[banner]{MASCOT} 欢迎使用 minicode！[/banner]\n\n"
+        f"[secondary]档位 {args.tier}（{resolve_model(args.tier)}） · 权限 {args.mode}[/secondary]\n"
+        f"[secondary]cwd: {os.getcwd()}[/secondary]\n\n"
+        f"[dim]/help 查看命令[/dim]"
     )
+    console.print(Panel(banner_body, border_style="accent", padding=(1, 2), expand=False))
     if args.mode == "yolo":
-        console.print("[red]⚠ yolo 模式：所有工具调用不经确认直接执行[/red]")
+        console.print("[warn]⚠ yolo 模式：所有工具调用不经确认直接执行[/warn]")
 
     # MCP 工具在入口加载一次（而不是在 Agent 里），混入本地工具集；
     # agent 循环对两者一视同仁。
@@ -196,6 +358,7 @@ def main() -> None:
         tools=TOOLS + mcp_tools,
     )
     agent.on_compact = lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]")
+    agent.on_tool_result = _print_tool_result
 
     if args.goal:
         if args.mode == "default":
@@ -215,7 +378,9 @@ def main() -> None:
 
     while True:
         try:
-            user_input = input("\n> ").strip()
+            # 提示符里带上当前档位，/model 切换后这里会立刻跟着变，
+            # 不用额外去看 /cost 或 banner 才知道现在跑的是哪个模型。
+            user_input = console.input(f"\n[accent]{MASCOT}[/accent] [secondary]({agent.tier})[/secondary] > ").strip()
         except EOFError:
             print()
             break
@@ -229,7 +394,27 @@ def main() -> None:
             continue
         if user_input.startswith("/"):
             # 先查内置命令，再查 skill（/commit 这类），都没有才报未知
-            builtin = {"/help", "/clear", "/compact", "/cost", "/mode", "/model", "/plan"}
+            builtin = {"/help", "/clear", "/compact", "/cost", "/mode", "/model", "/plan", "/resume"}
+            # 这几个命令不带参数时不甩一句"用法：..."就完事，而是弹交互式选择列表
+            pickers = {"/model": prompt_model_choice, "/mode": prompt_mode_choice, "/plan": prompt_plan_choice}
+            if user_input in pickers:
+                try:
+                    chosen = pickers[user_input](agent)
+                except (EOFError, KeyboardInterrupt):
+                    console.print("[warn](已取消)[/warn]")
+                    continue
+                console.print(handle_slash(f"{user_input} {chosen}", agent))
+                continue
+            if user_input == "/resume":
+                try:
+                    picked = prompt_resume_choice()
+                except (EOFError, KeyboardInterrupt):
+                    console.print("[warn](已取消)[/warn]")
+                    continue
+                if picked is not None:
+                    agent.messages = session.load(picked)
+                    console.print(f"[secondary]已恢复会话 {picked.stem}（{len(agent.messages)} 条消息）[/secondary]")
+                continue
             if user_input.split()[0] in builtin:
                 console.print(handle_slash(user_input, agent))
                 continue

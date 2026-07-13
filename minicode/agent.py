@@ -81,9 +81,16 @@ class Agent:
             real_client = anthropic.Anthropic(api_key=api_key, base_url=BASE_URL)
             self._messages_api = real_client.messages
 
+        self.tier = tier  # 当前档位标签（"sonnet"/"opus"），供终端显示用
         self.model = resolve_model(tier)
         self.messages: list[dict[str, Any]] = []
         self.on_tool_call = on_tool_call
+        # 工具执行完之后的回调（name, tool_input, result_text），无论成功/
+        # 拒绝/报错都会触发。带上 tool_input 是为了让终端能在 edit_file 时
+        # 用 old_str/new_str 画彩色 diff，而不用重新读一遍文件。不是构造
+        # 参数——跟 on_compact 一样，属于"终端要不要展示"这层可选装饰，
+        # 由调用方（cli.py）事后挂上去，不污染 Agent 的必需依赖。
+        self.on_tool_result: Callable[[str, dict[str, Any], str], None] | None = None
         self.permissions = permissions or PermissionManager(mode="default")
         # 工具集可定制：主 agent 用全量 TOOLS；子 agent（M7 task 工具派生）
         # 只拿到只读子集，且不含 task 自身——防止递归派生。
@@ -224,6 +231,19 @@ class Agent:
         if self.on_tool_call:
             self.on_tool_call(name, tool_input)
 
+        result_text = self._run_tool(name, tool_input)
+
+        if self.on_tool_result:
+            self.on_tool_result(name, tool_input, result_text)
+        return result_text
+
+    def _run_tool(self, name: str, tool_input: dict[str, Any]) -> str:
+        """真正跑一次工具调用，返回结果文本（成功/拒绝/报错都在这里产生）。
+
+        单独拆出来是为了让 _execute_tool 只有一个返回结果的出口——这样
+        on_tool_result 回调无论走到哪条分支都只需要挂一次，不用在每个
+        return 前都补一句。
+        """
         tool = self._tools_by_name.get(name)
         if tool is None:
             return f"错误：未知工具 {name}"

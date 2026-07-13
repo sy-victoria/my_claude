@@ -22,12 +22,36 @@ def save(path: Path, messages: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps({"messages": messages}, ensure_ascii=False), encoding="utf-8")
 
 
+def list_sessions(limit: int = 10) -> list[Path]:
+    """列出最近的会话文件，最新的排最前面（供 /resume 交互式选择用）。"""
+    if not SESSION_DIR.is_dir():
+        return []
+    files = sorted(SESSION_DIR.glob("*.json"), reverse=True)
+    return files[:limit]
+
+
+def load(path: Path) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data["messages"]
+
+
+def preview(path: Path) -> str:
+    """从会话文件里摘一句第一条用户消息，给 /resume 列表做预览用。"""
+    messages = load(path)
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message["content"]
+        text = content if isinstance(content, str) else next(
+            (b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"), ""
+        )
+        text = text.strip()
+        if text:
+            return text[:40] + ("…" if len(text) > 40 else "")
+    return "（空会话）"
+
+
 def load_latest() -> list[dict[str, Any]] | None:
     """返回最近一次会话的 messages；没有历史会话时返回 None。"""
-    if not SESSION_DIR.is_dir():
-        return None
-    files = sorted(SESSION_DIR.glob("*.json"))
-    if not files:
-        return None
-    data = json.loads(files[-1].read_text(encoding="utf-8"))
-    return data["messages"]
+    files = list_sessions(limit=1)
+    return load(files[0]) if files else None
