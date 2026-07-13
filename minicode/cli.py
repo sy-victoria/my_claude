@@ -13,6 +13,11 @@ import random
 import sys
 from pathlib import Path
 
+try:
+    import readline  # 标准库，不是新依赖；Windows 没有这个模块，静默跳过补全即可
+except ImportError:
+    readline = None
+
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -47,6 +52,8 @@ SPINNER_VERBS = [
     "Marinating", "Whirring", "Conjuring", "Sketching", "Weaving", "Polishing",
     "Hatching", "Doodling", "Daydreaming", "Wrangling",
 ]
+
+BUILTIN_COMMANDS = ("/help", "/clear", "/compact", "/cost", "/mode", "/model", "/plan", "/resume")
 
 HELP_TEXT = """\
 可用命令：
@@ -193,6 +200,35 @@ def resolve_skill_input(user_input: str) -> str | None:
         return None
     arguments = parts[1] if len(parts) > 1 else ""
     return skills.render_skill(found, arguments)
+
+
+def _setup_completion() -> None:
+    """给 slash 命令（含 skill 名）挂上 Tab 补全：纯标准库 `readline`，不加新依赖。
+
+    这跟 Claude Code 那种"打字过程中自动弹出候选框"不是一回事——那个需要
+    `prompt_toolkit`/`textual` 这类接管整个终端渲染的库（跟之前讨论"动态
+    变形输入框"是同一个依赖限制）。`readline` 是"按 Tab 触发"的传统 shell
+    补全（跟 bash/Python REPL 一样），够用、零新依赖，缺点是不会主动弹出来，
+    得自己按一下 Tab。
+    """
+    if readline is None:  # Windows 没有内置 readline，静默跳过
+        return
+
+    def completer(text: str, state: int) -> str | None:
+        if not text.startswith("/"):
+            return None
+        candidates = sorted(set(BUILTIN_COMMANDS) | {f"/{name}" for name in skills.discover_skills()})
+        matches = [c for c in candidates if c.startswith(text)]
+        return matches[state] if state < len(matches) else None
+
+    readline.set_completer(completer)
+    # "/" 默认在 readline 的分词分隔符里，会把 "/model" 从 "/" 处切开，
+    # 补全时只剩 "model" 这个词——去掉它，"/model" 才会被当成一个整体来补全。
+    readline.set_completer_delims(readline.get_completer_delims().replace("/", ""))
+    if "libedit" in (readline.__doc__ or ""):
+        readline.parse_and_bind("bind ^I rl_complete")  # macOS 自带的是 libedit 版 readline
+    else:
+        readline.parse_and_bind("tab: complete")
 
 
 def _run_one_turn(agent: Agent, user_input: str) -> None:
@@ -375,6 +411,7 @@ def main() -> None:
             console.print("[dim]没有可恢复的会话，从新对话开始[/dim]")
 
     session_path = session.new_session_path()
+    _setup_completion()
 
     while True:
         try:
@@ -394,7 +431,7 @@ def main() -> None:
             continue
         if user_input.startswith("/"):
             # 先查内置命令，再查 skill（/commit 这类），都没有才报未知
-            builtin = {"/help", "/clear", "/compact", "/cost", "/mode", "/model", "/plan", "/resume"}
+            builtin = set(BUILTIN_COMMANDS)
             # 这几个命令不带参数时不甩一句"用法：..."就完事，而是弹交互式选择列表
             pickers = {"/model": prompt_model_choice, "/mode": prompt_mode_choice, "/plan": prompt_plan_choice}
             if user_input in pickers:
