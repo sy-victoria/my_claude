@@ -17,8 +17,10 @@
 """
 
 import subprocess
+import threading
 
 from minicode import config
+from minicode.sandbox import sandbox_command
 from minicode.tools.base import Tool
 
 # 教学用的简化黑名单：真实产品（Claude Code）用的是更精细的命令解析 + 规则
@@ -50,24 +52,51 @@ def _run(tool_input: dict) -> str:
             return f"错误：命令包含被禁止的操作 {banned!r}，已拒绝执行。请换一种安全的做法。"
 
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=config.BASH_TIMEOUT_SECONDS,
-        )
+        argv, env = sandbox_command(command)
+    except RuntimeError as exc:
+        return f"错误：{exc}"
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    captured: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+    truncated: dict[str, bool] = {"stdout": False, "stderr": False}
+
+    def drain(label: str, stream: object) -> None:
+        assert hasattr(stream, "read")
+        limit = config.BASH_MAX_OUTPUT_CHARS * 4
+        while chunk := stream.read(4096):
+            remaining = limit - len(captured[label])
+            if remaining > 0:
+                captured[label] += chunk[:remaining]
+            if len(chunk) > remaining:
+                truncated[label] = True
+
+    threads = [threading.Thread(target=drain, args=(label, stream), daemon=True)
+               for label, stream in (("stdout", proc.stdout), ("stderr", proc.stderr))]
+    for thread in threads:
+        thread.start()
+    try:
+        proc.wait(timeout=config.BASH_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
         return (
             f"错误：命令执行超过 {config.BASH_TIMEOUT_SECONDS} 秒已被强制终止。"
             "如果是长时间运行的命令，考虑换成能快速返回的等价操作。"
         )
+    for thread in threads:
+        thread.join(timeout=1)
+
+    stdout = captured["stdout"].decode(errors="replace")
+    stderr = captured["stderr"].decode(errors="replace")
+    if truncated["stdout"]:
+        stdout += "\n[... 输出已截断]"
+    if truncated["stderr"]:
+        stderr += "\n[... 输出已截断]"
 
     parts: list[str] = []
-    if proc.stdout:
-        parts.append(_truncate(proc.stdout))
-    if proc.stderr:
-        parts.append("stderr:\n" + _truncate(proc.stderr))
+    if stdout:
+        parts.append(_truncate(stdout))
+    if stderr:
+        parts.append("stderr:\n" + _truncate(stderr))
     if proc.returncode != 0:
         parts.append(f"命令以非零退出码 {proc.returncode} 结束")
 

@@ -73,16 +73,34 @@ def test_answer_y_allows_once_but_asks_again():
     assert asked == ["bash", "bash"]
 
 
-def test_answer_a_adds_to_session_allowlist():
-    manager, asked = _manager("default", ["a"])
+def test_answer_a_only_allows_same_operation():
+    manager, asked = _manager("default", ["a", "n"])
     bash = get_tool("bash")
 
     assert manager.check(bash, {"command": "ls"}) == (True, "")
+    assert manager.check(bash, {"command": "ls"}) == (True, "")
     allowed, _ = manager.check(bash, {"command": "pwd"})
+    assert not allowed
+    assert asked == ["bash", "bash"]
 
-    assert allowed
-    # a 之后同一会话内不再询问。
-    assert asked == ["bash"]
+
+def test_deny_rule_overrides_yolo():
+    manager = PermissionManager(mode="yolo", rules={"deny": ["bash:*"]})
+    allowed, _ = manager.check(get_tool("bash"), {"command": "echo hi"})
+    assert not allowed
+
+
+def test_bash_allow_rule_does_not_match_compound_command():
+    manager = PermissionManager(mode="default", ask_user=lambda *_: "n",
+                                rules={"allow": ["bash:git status*"]})
+    allowed, _ = manager.check(get_tool("bash"), {"command": "git status; echo other"})
+    assert not allowed
+
+
+def test_write_outside_workspace_is_denied(tmp_path):
+    manager = PermissionManager(mode="yolo", cwd=tmp_path)
+    allowed, _ = manager.check(get_tool("write_file"), {"path": "../outside.txt"})
+    assert not allowed
 
 
 def test_answer_n_denies_with_reason_for_model():
@@ -116,7 +134,7 @@ def _tool_use(name, tool_input):
 def test_denied_tool_result_reaches_model(tmp_path):
     """用户拒绝时：工具不执行，拒绝理由作为 tool_result 进入 messages。"""
     target = tmp_path / "a.txt"
-    target.write_text("原内容")
+    target.write_text("原内容", encoding="utf-8")
 
     responses = [
         SimpleNamespace(
@@ -135,12 +153,12 @@ def test_denied_tool_result_reaches_model(tmp_path):
     assert reply == "好的，我不改了。"
     assert "拒绝" in agent.messages[2]["content"][0]["content"]
     # 文件必须原封不动——拒绝意味着工具根本没执行。
-    assert target.read_text() == "原内容"
+    assert target.read_text(encoding="utf-8") == "原内容"
 
 
 def test_yolo_mode_executes_write_without_asking(tmp_path):
     target = tmp_path / "a.txt"
-    target.write_text("原内容")
+    target.write_text("原内容", encoding="utf-8")
 
     responses = [
         SimpleNamespace(
@@ -150,11 +168,11 @@ def test_yolo_mode_executes_write_without_asking(tmp_path):
         SimpleNamespace(stop_reason="end_turn", content=[_text("改好了")]),
     ]
     asked = []
-    manager = PermissionManager(mode="yolo", ask_user=lambda name, inp: asked.append(name) or "n")
+    manager = PermissionManager(mode="yolo", cwd=tmp_path, ask_user=lambda name, inp: asked.append(name) or "n")
     agent = Agent(client=FakeMessagesAPI(responses), permissions=manager)
     agent._read_files.add(target.resolve())
 
     agent.run_turn("把 a.txt 改掉")
 
-    assert target.read_text() == "新内容"
+    assert target.read_text(encoding="utf-8") == "新内容"
     assert asked == []

@@ -6,7 +6,10 @@ messages 里的内容块在进入列表前就被转成了普通 dict（见 agent
 """
 
 import json
+import os
 import time
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +18,21 @@ SESSION_DIR = Path.home() / ".minicode" / "sessions"
 
 def new_session_path() -> Path:
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    return SESSION_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
+    return SESSION_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.json"
 
 
 def save(path: Path, messages: list[dict[str, Any]]) -> None:
-    path.write_text(json.dumps({"messages": messages}, ensure_ascii=False), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".session-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"messages": messages}, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def list_sessions(limit: int = 10) -> list[Path]:

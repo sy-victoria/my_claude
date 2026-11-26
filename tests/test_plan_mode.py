@@ -1,6 +1,7 @@
 """plan mode 测试：工具集物理切换与恢复、提示词后缀、命令入口。"""
 
 from minicode.agent import Agent
+from minicode.tools.task import build_subagent_tools
 from minicode.cli import handle_slash
 
 
@@ -46,3 +47,16 @@ def test_slash_plan_command():
 
     out_off = handle_slash("/plan off", agent)
     assert not agent.plan_mode and "退出" in out_off
+
+
+def test_work_subagent_excludes_recursive_task():
+    names = {tool.name for tool in build_subagent_tools("work")}
+    assert "edit_file" in names and "bash" in names
+    assert "task" not in names
+
+
+def test_plan_mode_rejects_work_subagent():
+    agent = Agent(client=FakeAPI())
+    agent.set_plan_mode(True)
+    result = agent._run_tool("task", {"description": "修改", "prompt": "修改文件", "mode": "work"})
+    assert "计划模式不允许" in result

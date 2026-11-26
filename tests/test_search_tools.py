@@ -102,7 +102,7 @@ def test_edit_without_prior_read_is_rejected(tmp_path):
         ),
         _final("好"),
     ]
-    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo"))
+    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo", cwd=tmp_path))
 
     agent.run_turn("改一下")
 
@@ -124,7 +124,7 @@ def test_edit_after_read_succeeds(tmp_path):
         ),
         _final("改好了"),
     ]
-    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo"))
+    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo", cwd=tmp_path))
 
     agent.run_turn("改一下")
 
@@ -140,7 +140,7 @@ def test_creating_new_file_needs_no_prior_read(tmp_path):
         ),
         _final("建好了"),
     ]
-    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo"))
+    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo", cwd=tmp_path))
 
     agent.run_turn("建个文件")
 

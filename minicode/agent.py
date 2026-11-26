@@ -20,6 +20,10 @@ agent 的本质是「LLM + 工具 + 循环」（详见 docs/01-architecture.md �
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -30,6 +34,7 @@ from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary,
 from minicode.hooks import load_hooks, run_hooks
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
+from minicode.sandbox import sandbox_argv
 from minicode.tools import TOOLS
 from minicode.tools.base import Tool
 
@@ -71,18 +76,23 @@ class Agent:
         on_tool_call: ToolCallHook | None = None,
         permissions: PermissionManager | None = None,
         tools: list[Tool] | None = None,
-        max_loops: int | None = None,
+        max_loops: int | None = 40,
+        base_url: str | None = None,
+        model: str | None = None,
     ) -> None:
         if client is not None:
             self._messages_api = client
         else:
             if not api_key:
                 raise ValueError("必须提供 api_key（或直接传入 client 用于测试）")
-            real_client = anthropic.Anthropic(api_key=api_key, base_url=BASE_URL)
+            real_client = anthropic.Anthropic(api_key=api_key, base_url=base_url or BASE_URL)
             self._messages_api = real_client.messages
 
+        self.api_key = api_key
+        self.base_url = base_url or BASE_URL
+
         self.tier = tier  # 当前档位标签（"sonnet"/"opus"），供终端显示用
-        self.model = resolve_model(tier)
+        self.model = model or resolve_model(tier)
         self.messages: list[dict[str, Any]] = []
         self.on_tool_call = on_tool_call
         # 工具执行完之后的回调（name, tool_input, result_text），无论成功/
@@ -127,14 +137,22 @@ class Agent:
         if self.context.should_compact():
             self.compact()
 
+        turn_start = len(self.messages)
         self.messages.append({"role": "user", "content": user_input})
 
         loops = 0
         while True:
             loops += 1
             if self.max_loops is not None and loops > self.max_loops:
-                return f"[已达到最大循环轮数 {self.max_loops}，任务提前结束]"
-            response = self._request(on_text)
+                message = f"[已达到最大循环轮数 {self.max_loops}，任务提前结束]"
+                self.messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
+                return message
+            try:
+                response = self._request(on_text)
+            except Exception:
+                # API 失败时撤销本轮消息，保证会话可继续；工具副作用无法撤销。
+                del self.messages[turn_start:]
+                raise
             self.context.record(response)
             self.messages.append(
                 {"role": "assistant", "content": [_block_to_dict(b) for b in response.content]}
@@ -247,6 +265,8 @@ class Agent:
         tool = self._tools_by_name.get(name)
         if tool is None:
             return f"错误：未知工具 {name}"
+        if self.plan_mode and name == "task" and tool_input.get("mode") == "work":
+            return "错误：计划模式不允许可写子 agent"
 
         # 读后编辑约束：这条策略需要跨工具的会话状态（谁被读过），所以放在
         # agent 层而不是工具内部。放在权限检查之前——注定失败的调用没必要
@@ -270,7 +290,22 @@ class Agent:
             return f"操作被 pre_tool hook 阻止：{hook_reason}"
 
         try:
-            result = tool.run(tool_input)
+            if name == "task":
+                from minicode.tools.task import current_parent
+                token = current_parent.set(self)
+                try:
+                    result = tool.run(tool_input)
+                finally:
+                    current_parent.reset(token)
+            elif os.name == "posix" and name in {"read_file", "list_files", "glob", "grep", "edit_file", "write_file"}:
+                argv, env = sandbox_argv([sys.executable, "-m", "minicode.tool_worker"], self.permissions.cwd)
+                worker = subprocess.run(argv, input=json.dumps({"name": name, "input": tool_input}),
+                                        text=True, capture_output=True, timeout=30, env=env)
+                if worker.returncode:
+                    raise RuntimeError(worker.stderr.strip() or worker.stdout.strip())
+                result = json.loads(worker.stdout)["result"]
+            else:
+                result = tool.run(tool_input)
             if name == "read_file" and not result.startswith("错误"):
                 self._read_files.add(Path(tool_input.get("path", "")).resolve())
             run_hooks(self.hooks, "post_tool", name, tool_input)

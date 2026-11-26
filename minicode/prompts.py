@@ -95,17 +95,20 @@ def _project_memory(cwd: Path) -> str | None:
     常用命令。放进 system prompt 意味着它的优先级高于对话内容，且每次请求
     都在场。
     """
-    memory_file = cwd / "AGENT.md"
-    if not memory_file.is_file():
-        return None
-    content = memory_file.read_text(encoding="utf-8").strip()
-    if not content:
-        return None
-    return f"""\
-以下是本项目的记忆文件 AGENT.md，其中的规则和信息适用于本项目内的所有任务，
-你必须遵守：
-
-{content}"""
+    sections: list[str] = []
+    directories = [*reversed(cwd.resolve().parents), cwd.resolve()]
+    for directory in directories:
+        for name in ("CLAUDE.md", "AGENT.md"):
+            memory_file = directory / name
+            if memory_file.is_file():
+                try:
+                    content = memory_file.read_text(encoding="utf-8").strip()
+                except UnicodeDecodeError:
+                    import locale
+                    content = memory_file.read_text(encoding=locale.getpreferredencoding(False)).strip()
+                if content:
+                    sections.append(f"[{memory_file}]\n{content}")
+    return "\n\n".join(sections) if sections else None
 
 
 def _skills_section(cwd: Path) -> str | None:

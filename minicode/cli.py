@@ -8,6 +8,7 @@ M8 之前这里是一个 print/input 的朴素 REPL；现在的结构：
 
 import argparse
 import difflib
+import json
 import os
 import random
 import re
@@ -31,6 +32,7 @@ from minicode import session, skills
 from minicode.agent import Agent
 from minicode.config import CONTEXT_WINDOW_TOKENS, DEFAULT_TIER, TIER_MODELS, resolve_model
 from minicode.permissions import MODES, PermissionManager
+from minicode.settings import load_settings
 
 # 配色跟着后端走：我们接的是 DeepSeek，就用 DeepSeek 的品牌蓝，
 # 而不是 Anthropic 的橙色——终端主题应该诚实反映"这是谁的模型在跑"。
@@ -285,6 +287,10 @@ def _run_one_turn(agent: Agent, user_input: str) -> None:
         del agent.messages[checkpoint:]
         console.print("\n[warn](已中断，本轮输入已丢弃)[/warn]")
         return
+    except Exception as exc:
+        del agent.messages[checkpoint:]
+        console.print(f"\n[warn]本轮请求失败：{exc}[/warn]")
+        return
 
     used_pct = round(agent.context.last_input_tokens / CONTEXT_WINDOW_TOKENS * 100)
     console.print(
@@ -366,12 +372,29 @@ def run_goal_mode(agent: Agent, goal: str, max_rounds: int = GOAL_MAX_ROUNDS) ->
 def main() -> None:
     parser = argparse.ArgumentParser(prog="minicode")
     parser.add_argument("--tier", default=DEFAULT_TIER, choices=list(TIER_MODELS), help="模型档位")
+    parser.add_argument("--base-url", help="Anthropic 兼容端点 URL；默认 DeepSeek")
+    parser.add_argument("--model", help="具体模型名；覆盖 --tier 的初始映射")
     parser.add_argument("--mode", default="default", choices=list(MODES), help="权限模式")
     parser.add_argument("--resume", action="store_true", help="恢复最近一次会话")
+    parser.add_argument("--session-id", help="恢复指定会话 ID（用于 -p）")
     parser.add_argument("--goal", help="goal 模式：给定目标自主执行到完成（建议配合 --mode accept-edits）")
+    parser.add_argument("-p", "--print", dest="prompt", help="非交互运行一轮")
+    parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text")
     args = parser.parse_args()
+    if args.prompt is not None and args.output_format != "text" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    settings = load_settings()
+    max_loops = settings.get("max_loops", 40)
+    if not isinstance(max_loops, int) or max_loops < 1:
+        parser.error("max_loops 必须是正整数")
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if args.prompt is not None and not api_key:
+        if args.output_format in ("json", "stream-json"):
+            print(json.dumps({"type": "error", "error": "缺少 ANTHROPIC_API_KEY"}, ensure_ascii=False))
+        else:
+            print("缺少 ANTHROPIC_API_KEY", file=sys.stderr)
+        raise SystemExit(2)
     if not api_key:
         # 首次体验友好一点：不直接报错退出，而是当场问一次。只留在这个
         # 进程的内存里传给 Agent，不写环境变量、不落盘——CLAUDE.md red line。
@@ -399,8 +422,9 @@ def main() -> None:
         f"[secondary]cwd: {os.getcwd()}[/secondary]\n\n"
         f"[dim]/help 查看命令[/dim]"
     )
-    console.print(Panel(banner_body, border_style="accent", padding=(1, 2), expand=False))
-    if args.mode == "yolo":
+    if args.prompt is None:
+        console.print(Panel(banner_body, border_style="accent", padding=(1, 2), expand=False))
+    if args.mode == "yolo" and args.prompt is None:
         console.print("[warn]⚠ yolo 模式：所有工具调用不经确认直接执行[/warn]")
 
     # MCP 工具在入口加载一次（而不是在 Agent 里），混入本地工具集；
@@ -409,18 +433,60 @@ def main() -> None:
     from minicode.tools import TOOLS
 
     mcp_tools = load_mcp_tools()
-    if mcp_tools:
+    if mcp_tools and args.prompt is None:
         console.print(f"[dim]已加载 {len(mcp_tools)} 个 MCP 工具：{', '.join(t.name for t in mcp_tools)}[/dim]")
+
+    def emit_event(kind: str, **payload: object) -> None:
+        print(json.dumps({"type": kind, **payload}, ensure_ascii=False), flush=True)
 
     agent = Agent(
         api_key=api_key,
         tier=args.tier,
-        on_tool_call=_print_tool_call,
-        permissions=PermissionManager(mode=args.mode),
+        base_url=args.base_url or settings.get("base_url"),
+        model=args.model or settings.get("model"),
+        max_loops=max_loops,
+        on_tool_call=(lambda name, inp: emit_event("tool_call", name=name, input=inp))
+        if args.output_format == "stream-json" and args.prompt is not None else
+        (None if args.prompt else _print_tool_call),
+        permissions=PermissionManager(mode=args.mode, ask_user=(lambda _n, _i: "n") if args.prompt else None,
+                                      rules=settings["permissions"]),
         tools=TOOLS + mcp_tools,
     )
     agent.on_compact = lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]")
-    agent.on_tool_result = _print_tool_result
+    agent.on_tool_result = (lambda name, inp, result: emit_event("tool_result", name=name, result=result)) \
+        if args.output_format == "stream-json" and args.prompt is not None else \
+        (None if args.prompt else _print_tool_result)
+
+    if args.prompt is not None:
+        try:
+            if args.session_id:
+                target = (session.SESSION_DIR / f"{args.session_id}.json").resolve()
+                if target.parent != session.SESSION_DIR.resolve():
+                    raise ValueError("无效会话 ID")
+                agent.messages = session.load(target)
+            elif args.resume:
+                agent.messages = session.load_latest() or []
+            reply = agent.run_turn(args.prompt, on_text=(lambda chunk: emit_event("text_delta", text=chunk))
+                                   if args.output_format == "stream-json" else None)
+            session_path = session.new_session_path()
+            session.save(session_path, agent.messages)
+            if args.output_format == "json":
+                print(json.dumps({"result": reply, "session_id": session_path.stem,
+                                  "usage_tokens": agent.context.cumulative_tokens}, ensure_ascii=False))
+            elif args.output_format == "stream-json":
+                emit_event("result", result=reply, session_id=session_path.stem,
+                           usage_tokens=agent.context.cumulative_tokens)
+            else:
+                print(reply)
+        except Exception as exc:
+            if args.output_format == "json":
+                print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+            elif args.output_format == "stream-json":
+                emit_event("error", error=str(exc))
+            else:
+                print(f"运行失败：{exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        return
 
     if args.goal:
         if args.mode == "default":

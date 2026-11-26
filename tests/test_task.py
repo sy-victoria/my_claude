@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from minicode.agent import Agent
+from minicode.permissions import PermissionManager
 from minicode.tools import task
 from minicode.tools.task import build_subagent_tools, task_tool
 
@@ -69,3 +70,21 @@ def test_custom_toolset_limits_api_schema():
 
     sent_names = {t["name"] for t in captured[0]["tools"]}
     assert sent_names == {"read_file", "list_files", "glob", "grep"}
+
+
+def test_work_subagent_inherits_parent_policy_and_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(task, "subagent_factory", None)
+    parent = Agent(api_key="test-key", client=FakeAPI([]), model="chosen-model",
+                   base_url="https://example.com", permissions=PermissionManager(
+                       cwd=tmp_path, rules={"deny": ["bash:*"]}))
+    token = task.current_parent.set(parent)
+    try:
+        child = task._make_subagent("work")
+    finally:
+        task.current_parent.reset(token)
+    assert child.model == "chosen-model"
+    assert child.base_url == "https://example.com"
+    assert child.permissions.cwd == tmp_path
+    allowed, _ = child.permissions.check(next(t for t in child.tools if t.name == "bash"),
+                                          {"command": "echo hi"})
+    assert not allowed

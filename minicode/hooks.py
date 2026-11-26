@@ -24,6 +24,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from minicode.sandbox import sandbox_command
+
 HOOK_TIMEOUT_SECONDS = 10
 
 
@@ -53,14 +55,22 @@ def run_hooks(
         env["TOOL_INPUT"] = json.dumps(tool_input, ensure_ascii=False)
         env["TOOL_FILE"] = str(tool_input.get("path", ""))
         try:
+            argv, sandbox_env = sandbox_command(hook["command"])
+            marker = argv.index("--")
+            for key in ("TOOL_NAME", "TOOL_INPUT", "TOOL_FILE"):
+                argv[marker:marker] = ["--setenv", key, env[key]]
+                marker += 3
             proc = subprocess.run(
-                hook["command"],
-                shell=True,
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=HOOK_TIMEOUT_SECONDS,
-                env=env,
+                env=sandbox_env,
             )
+        except RuntimeError as exc:
+            if event == "pre_tool":
+                return False, str(exc)
+            continue
         except subprocess.TimeoutExpired:
             if event == "pre_tool":
                 return False, f"pre_tool hook 超时（{HOOK_TIMEOUT_SECONDS}s）：{hook['command']}"

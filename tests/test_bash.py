@@ -5,8 +5,15 @@
 超时用例通过 monkeypatch 把 config.BASH_TIMEOUT_SECONDS 调小，不用真等 30 秒。
 """
 
+import os
+import shutil
+
+import pytest
+
 from minicode import config
 from minicode.tools.bash import bash_tool
+
+pytestmark = pytest.mark.skipif(os.name != "posix" or not shutil.which("bwrap"), reason="Linux bubblewrap required")
 
 
 def test_normal_command_returns_stdout():

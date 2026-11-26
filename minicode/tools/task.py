@@ -14,6 +14,7 @@
 """
 
 import os
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from minicode.tools.base import Tool
@@ -29,32 +30,50 @@ on_subagent_tool_call: Callable[[str, dict[str, Any]], None] = lambda name, tool
 
 # 测试注入点：设置后 _run 用它构造子 agent，替代真实 API。
 subagent_factory: Callable[[], Any] | None = None
+current_parent: ContextVar[Any | None] = ContextVar("minicode_task_parent", default=None)
 
 
-def build_subagent_tools() -> list[Tool]:
+def build_subagent_tools(mode: str = "explore") -> list[Tool]:
     from minicode.tools import TOOLS  # 局部导入避免循环依赖
 
+    if mode == "work":
+        return [t for t in TOOLS if t.name not in {"task", "todo_write"}]
     return [t for t in TOOLS if t.name in SUBAGENT_TOOL_NAMES]
 
 
-def _make_subagent() -> Any:
+def _make_subagent(mode: str = "explore", max_loops: int = MAX_SUB_LOOPS) -> Any:
     if subagent_factory is not None:
         return subagent_factory()
 
     from minicode.agent import Agent  # 局部导入避免循环依赖
+    from minicode.permissions import PermissionManager
+    from minicode.settings import load_settings
+    parent = current_parent.get()
 
     return Agent(
-        api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        tools=build_subagent_tools(),
-        max_loops=MAX_SUB_LOOPS,
+        api_key=parent.api_key if parent is not None else os.environ.get("ANTHROPIC_API_KEY"),
+        tier=parent.tier if parent is not None else "sonnet",
+        model=parent.model if parent is not None else None,
+        base_url=parent.base_url if parent is not None else None,
+        tools=build_subagent_tools(mode),
+        max_loops=max_loops,
         on_tool_call=on_subagent_tool_call,
+        permissions=PermissionManager(mode="default", cwd=parent.permissions.cwd if parent is not None else None,
+                                      rules=parent.permissions.rules if parent is not None else load_settings()["permissions"],
+                                      ask_user=parent.permissions.ask_user if parent is not None else None),
     )
 
 
 def _run(tool_input: dict) -> str:
     prompt = tool_input["prompt"]
+    mode = tool_input.get("mode", "explore")
+    if mode not in ("explore", "work"):
+        return "错误：mode 必须是 explore 或 work"
+    max_loops = tool_input.get("max_loops", MAX_SUB_LOOPS)
+    if not isinstance(max_loops, int) or not 1 <= max_loops <= 30:
+        return "错误：max_loops 必须在 1 到 30 之间"
     try:
-        sub_agent = _make_subagent()
+        sub_agent = _make_subagent(mode, max_loops)
     except ValueError as exc:
         return f"错误：无法创建子 agent：{exc}"
 
@@ -66,18 +85,18 @@ def _run(tool_input: dict) -> str:
 task_tool = Tool(
     name="task",
     description=(
-        "把一个探索/调查类任务派给独立的子 agent 执行，返回它的调查结论。"
-        "子 agent 有自己独立的上下文和只读工具（read_file/list_files/glob/grep），"
-        "适合『全面调查 X 在哪里实现』『梳理某个模块的结构』这类需要大量搜索"
-        "和阅读的任务——中间过程不会占用当前对话的上下文。"
-        "不适合：简单的单次查找（直接用 grep 更快）、需要修改文件的任务"
-        "（子 agent 没有写权限）。prompt 要写清楚调查目标和期望的输出形式。"
+        "把任务派给独立上下文的子 agent，返回其结论。"
+        "默认 mode=explore 只读；mode=work 时可申请修改文件和执行命令。"
+        "适合需要大量搜索或独立处理的任务；简单查找请直接用 grep。"
+        "prompt 要写清楚目标和期望的输出形式。"
     ),
     input_schema={
         "type": "object",
         "properties": {
             "description": {"type": "string", "description": "任务的一句话概述（给用户看的进度提示）"},
             "prompt": {"type": "string", "description": "给子 agent 的完整任务指令，包含调查目标和期望输出"},
+            "mode": {"type": "string", "enum": ["explore", "work"], "description": "explore 只读；work 可申请修改与执行权限"},
+            "max_loops": {"type": "integer", "minimum": 1, "maximum": 30},
         },
         "required": ["description", "prompt"],
     },

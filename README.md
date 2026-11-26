@@ -1,5 +1,14 @@
 # mini-code 🐳
 
+## 当前开发版的运行边界
+
+- 模型推理仍通过远程 API；本地 agent 本身可在 CPU 上运行。使用 `--base-url` 和 `--model` 可选择 Anthropic 兼容端点与模型，默认仍是 DeepSeek。
+- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。此实现尚未完成 Linux 实机验收。
+- Windows/macOS 尚无系统级执行沙箱；这些平台上的 shell、hooks 和本地 MCP 会拒绝运行。Windows 文件工具仍通过路径权限检查执行。
+- `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
+- 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。可配置 `base_url`、`model`、`max_loops` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置不能新增 `allow` 规则。
+- 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`，可用 `token_env` 指向 Bearer token 环境变量。尚未实现 OAuth 登录；工具清单请求失败时会尝试重新握手一次。
+
 从零复现一个 Claude Code 风格的 coding agent，用于学习 agent 架构。
 
 **核心思想：Agent = LLM + 工具 + 循环。** 本项目用 Python + Anthropic API，分 9 个里程碑逐步复现 Claude Code 的核心架构：agent 循环 → bash 工具 → 权限系统 → 系统提示词与项目记忆 → 搜索/编辑工具箱 → 上下文管理 → 子 Agent → 终端体验。

@@ -1,7 +1,10 @@
 """M9a/M9f/M9c 测试：todo 工具、goal 模式循环、hooks 机制。"""
 
 import json
+import os
 from types import SimpleNamespace
+
+import pytest
 
 from minicode import hooks as hooks_mod
 from minicode.agent import Agent
@@ -74,7 +77,7 @@ def test_goal_mode_respects_round_limit():
 def _agent_with_hooks(tmp_path, hooks_config, responses):
     (tmp_path / ".minicode").mkdir(exist_ok=True)
     (tmp_path / ".minicode" / "hooks.json").write_text(json.dumps(hooks_config))
-    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo"))
+    agent = Agent(client=FakeAPI(responses), permissions=PermissionManager(mode="yolo", cwd=tmp_path))
     agent.hooks = hooks_mod.load_hooks(tmp_path)
     return agent
 
@@ -86,6 +89,7 @@ def _tool_use(name, tool_input):
     )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="hooks require Linux sandbox")
 def test_pre_hook_nonzero_exit_blocks_tool(tmp_path):
     target = tmp_path / "a.txt"
     responses = [
@@ -104,6 +108,7 @@ def test_pre_hook_nonzero_exit_blocks_tool(tmp_path):
     assert "禁止写入" in agent.messages[2]["content"][0]["content"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="hooks require Linux sandbox")
 def test_post_hook_runs_with_env_vars(tmp_path):
     target = tmp_path / "a.txt"
     marker = tmp_path / "hook_ran.txt"
