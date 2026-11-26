@@ -73,6 +73,7 @@ def test_openai_endpoint_sends_bearer_to_configured_https_host(monkeypatch):
     class Opener:
         def open(self, request, timeout):
             seen["url"] = request.full_url
+            seen["timeout"] = timeout
             seen["authorization"] = request.get_header("Authorization")
             seen["payload"] = json.loads(request.data)
             return io.BytesIO(json.dumps({"choices": [{"message": {"content": "ok"},
@@ -80,8 +81,10 @@ def test_openai_endpoint_sends_bearer_to_configured_https_host(monkeypatch):
 
     monkeypatch.setattr("minicode.openai_backend.urllib.request.build_opener", lambda *_args: Opener())
     response = OpenAIChatAdapter("https://api.example.com/v1", "secret").create(
-        model="test-model", max_tokens=100, system="hello", messages=[{"role": "user", "content": "hi"}])
+        model="test-model", max_tokens=100, system="hello", timeout=2,
+        messages=[{"role": "user", "content": "hi"}])
     assert response.content[0].text == "ok"
     assert seen["url"] == "https://api.example.com/v1/chat/completions"
     assert seen["authorization"] == "Bearer secret"
+    assert seen["timeout"] == 2
     assert seen["payload"]["messages"][0] == {"role": "system", "content": "hello"}

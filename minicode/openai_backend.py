@@ -80,7 +80,8 @@ class OpenAIChatAdapter:
         request = urllib.request.Request(self.base_url + "/chat/completions",
                                          json.dumps(payload, ensure_ascii=False).encode(), headers=headers)
         try:
-            with urllib.request.build_opener(_NoRedirect()).open(request, timeout=self.timeout) as response:
+            with urllib.request.build_opener(_NoRedirect()).open(
+                request, timeout=kwargs.get("timeout", self.timeout)) as response:
                 body = response.read(10_000_001)
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"模型端点 HTTP {exc.code}") from exc

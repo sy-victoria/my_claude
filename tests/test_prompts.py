@@ -30,6 +30,17 @@ def test_memory_file_is_injected_when_present(tmp_path):
     assert "AGENT.md" in prompt
 
 
+def test_parent_and_project_memory_are_layered_in_order(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (tmp_path / "CLAUDE.md").write_text("父级约定", encoding="utf-8")
+    (project / "AGENT.md").write_text("项目约定", encoding="utf-8")
+
+    prompt = build_system_prompt(project)
+
+    assert prompt.index("父级约定") < prompt.index("项目约定")
+
+
 def test_no_memory_section_when_file_absent(tmp_path):
     prompt = build_system_prompt(tmp_path)
 

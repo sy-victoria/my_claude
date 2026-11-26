@@ -104,6 +104,12 @@ def test_slash_model_switches_tier():
     assert "opus" in out
 
 
+def test_slash_model_uses_explicit_name_for_local_backend():
+    agent = Agent(provider="ollama", model="local-a", client=FakeAPI([]))
+    assert "local-b" in handle_slash("/model local-b", agent)
+    assert agent.model == "local-b"
+
+
 def test_slash_unknown_command():
     out = handle_slash("/what", _agent())
 

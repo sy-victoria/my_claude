@@ -175,8 +175,11 @@ class Agent:
             if time.monotonic() >= deadline:
                 return self._stop_incomplete("time_limit", f"单轮运行超过 {self.max_turn_seconds} 秒")
             try:
-                response = self._request(on_text)
+                response = self._request(on_text, timeout=min(self.api_timeout_seconds,
+                                                             max(0.1, deadline - time.monotonic())))
             except Exception as exc:
+                if time.monotonic() >= deadline:
+                    return self._stop_incomplete("time_limit", f"单轮运行超过 {self.max_turn_seconds} 秒")
                 # 已运行的工具可能有副作用；保留完整工具记录，方便恢复会话。
                 if len(self.messages) > turn_start + 1:
                     return self._stop_incomplete("api_error", f"API 请求失败：{exc}")
@@ -214,7 +217,7 @@ class Agent:
         self.messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
         return message
 
-    def _request(self, on_text: TextHook | None) -> Any:
+    def _request(self, on_text: TextHook | None, timeout: float | None = None) -> Any:
         """发一次 API 请求。有 on_text 且 client 支持时走流式接口。"""
         kwargs: dict[str, Any] = dict(
             model=self.model,
@@ -223,6 +226,8 @@ class Agent:
             tools=[tool.to_api_schema() for tool in self.tools],
             messages=self.messages,
         )
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         if on_text is not None and hasattr(self._messages_api, "stream"):
             with self._messages_api.stream(**kwargs) as stream:
                 for chunk in stream.text_stream:

@@ -81,10 +81,12 @@ def test_tool_budget_preserves_complete_tool_results_and_next_turn():
 
 def test_turn_deadline_stops_tool_use_without_running_it(monkeypatch):
     clock = [0.0]
+    request_timeouts = []
     monkeypatch.setattr("minicode.agent.time.monotonic", lambda: clock[0])
 
     class SlowAPI:
         def create(self, **kwargs):
+            request_timeouts.append(kwargs["timeout"])
             clock[0] = 2.0
             return SimpleNamespace(stop_reason="tool_use", content=[
                 SimpleNamespace(type="tool_use", id="one", name="unknown", input={})
@@ -94,6 +96,7 @@ def test_turn_deadline_stops_tool_use_without_running_it(monkeypatch):
     assert "提前结束" in agent.run_turn("开始")
     assert agent.last_stop_reason == "time_limit"
     assert len(agent.messages[2]["content"]) == 1
+    assert request_timeouts == [1]
 
 
 def test_api_failure_after_tool_keeps_recoverable_history():
@@ -116,6 +119,22 @@ def test_api_failure_after_tool_keeps_recoverable_history():
     assert agent.last_stop_reason == "api_error"
     assert [message["role"] for message in agent.messages] == ["user", "assistant", "user", "assistant"]
     assert agent.run_turn("继续") == "已恢复"
+
+
+def test_api_timeout_at_turn_deadline_reports_incomplete(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr("minicode.agent.time.monotonic", lambda: clock[0])
+
+    class TimingOutAPI:
+        def create(self, **kwargs):
+            assert kwargs["timeout"] == 1
+            clock[0] = 1.0
+            raise TimeoutError("request expired")
+
+    agent = Agent(client=TimingOutAPI(), max_turn_seconds=1)
+    assert "提前结束" in agent.run_turn("任务")
+    assert agent.last_stop_reason == "time_limit"
+    assert [message["role"] for message in agent.messages] == ["user", "assistant"]
 
 
 def test_custom_toolset_limits_api_schema():
