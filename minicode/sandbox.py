@@ -71,7 +71,7 @@ def sandbox_argv(argv: list[str], cwd: Path | None = None,
     for directory in ("/home", "/root"):
         if Path(directory).is_dir():
             args += ["--tmpfs", directory]
-    if workspace.is_relative_to(Path("/home")) or workspace.is_relative_to(Path("/root")):
+    if any(workspace.is_relative_to(Path(directory)) for directory in ("/home", "/root", "/tmp")):
         args += ["--dir", str(workspace.parent)]
     args += ["--bind" if writable_workspace else "--ro-bind", str(workspace), str(workspace),
              "--dir", "/opt/minicode", "--ro-bind", str(Path(__file__).resolve().parent.parent), "/opt/minicode",
