@@ -365,8 +365,8 @@ def run_goal_mode(agent: Agent, goal: str, max_rounds: int = GOAL_MAX_ROUNDS) ->
         if GOAL_DONE_MARK in reply and agent.last_stop_reason in ("end_turn", "stop_sequence"):
             console.print("[green]✔ 目标完成[/green]")
             return True
-        if agent.last_stop_reason == "loop_limit":
-            console.print("[yellow]单轮工具调用达到上限，目标未完成[/yellow]")
+        if agent.last_stop_reason in ("loop_limit", "tool_limit", "time_limit"):
+            console.print("[yellow]单轮运行达到上限，目标未完成[/yellow]")
             return False
     console.print(f"[yellow]达到 {max_rounds} 轮上限，目标未确认完成[/yellow]")
     return False
@@ -388,8 +388,16 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8")
     settings = load_settings()
     max_loops = settings.get("max_loops", 40)
-    if not isinstance(max_loops, int) or max_loops < 1:
+    if not isinstance(max_loops, int) or isinstance(max_loops, bool) or max_loops < 1:
         parser.error("max_loops 必须是正整数")
+    max_tool_calls = settings.get("max_tool_calls", 100)
+    if not isinstance(max_tool_calls, int) or isinstance(max_tool_calls, bool) or max_tool_calls < 1:
+        parser.error("max_tool_calls 必须是正整数")
+    for key in ("api_timeout_seconds", "max_turn_seconds"):
+        value = settings.get(key, 90 if key == "api_timeout_seconds" else 600)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 86400:
+            parser.error(f"{key} 必须是 0 到 86400 之间的数字")
+        settings[key] = value
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if args.prompt is not None and not api_key:
@@ -448,6 +456,9 @@ def main() -> None:
         base_url=args.base_url or settings.get("base_url"),
         model=args.model or settings.get("model"),
         max_loops=max_loops,
+        api_timeout_seconds=settings["api_timeout_seconds"],
+        max_turn_seconds=settings["max_turn_seconds"],
+        max_tool_calls=max_tool_calls,
         on_tool_call=(lambda name, inp: emit_event("tool_call", name=name, input=inp))
         if args.output_format == "stream-json" and args.prompt is not None else
         (None if args.prompt else _print_tool_call),

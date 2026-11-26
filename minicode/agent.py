@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -79,13 +80,19 @@ class Agent:
         max_loops: int | None = 40,
         base_url: str | None = None,
         model: str | None = None,
+        api_timeout_seconds: float = 90,
+        max_turn_seconds: float = 600,
+        max_tool_calls: int = 100,
     ) -> None:
+        if api_timeout_seconds <= 0 or max_turn_seconds <= 0 or max_tool_calls < 1:
+            raise ValueError("请求超时、单轮时限和工具调用上限必须为正数")
         if client is not None:
             self._messages_api = client
         else:
             if not api_key:
                 raise ValueError("必须提供 api_key（或直接传入 client 用于测试）")
-            real_client = anthropic.Anthropic(api_key=api_key, base_url=base_url or BASE_URL)
+            real_client = anthropic.Anthropic(api_key=api_key, base_url=base_url or BASE_URL,
+                                              timeout=api_timeout_seconds, max_retries=1)
             self._messages_api = real_client.messages
 
         self.api_key = api_key
@@ -108,6 +115,9 @@ class Agent:
         self._tools_by_name = {t.name: t for t in self.tools}
         # 单轮对话内的最大循环次数（子 agent 用，防失控）；None = 不限制。
         self.max_loops = max_loops
+        self.api_timeout_seconds = api_timeout_seconds
+        self.max_turn_seconds = max_turn_seconds
+        self.max_tool_calls = max_tool_calls
         self.plan_mode = False
         self._full_tools = self.tools  # plan mode 退出时恢复用
         # 用户配置的工具前后钩子（M9c），启动时加载一次
@@ -143,17 +153,20 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
 
         loops = 0
+        tool_calls = 0
+        deadline = time.monotonic() + self.max_turn_seconds
         while True:
             loops += 1
             if self.max_loops is not None and loops > self.max_loops:
-                self.last_stop_reason = "loop_limit"
-                message = f"[已达到最大循环轮数 {self.max_loops}，任务提前结束]"
-                self.messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
-                return message
+                return self._stop_incomplete("loop_limit", f"已达到最大循环轮数 {self.max_loops}")
+            if time.monotonic() >= deadline:
+                return self._stop_incomplete("time_limit", f"单轮运行超过 {self.max_turn_seconds} 秒")
             try:
                 response = self._request(on_text)
-            except Exception:
-                # API 失败时撤销本轮消息，保证会话可继续；工具副作用无法撤销。
+            except Exception as exc:
+                # 已运行的工具可能有副作用；保留完整工具记录，方便恢复会话。
+                if len(self.messages) > turn_start + 1:
+                    return self._stop_incomplete("api_error", f"API 请求失败：{exc}")
                 del self.messages[turn_start:]
                 raise
             self.context.record(response)
@@ -165,12 +178,28 @@ class Agent:
                 self.last_stop_reason = response.stop_reason
                 return self._extract_text(response.content)
 
-            tool_results = [
-                self._run_tool_use_block(block)
-                for block in response.content
-                if block.type == "tool_use"
-            ]
+            tool_results = []
+            reached_limit = False
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                if tool_calls >= self.max_tool_calls or time.monotonic() >= deadline:
+                    reached_limit = True
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id,
+                                         "content": "本轮工具调用或运行时间已达上限"})
+                    continue
+                tool_results.append(self._run_tool_use_block(block))
+                tool_calls += 1
             self.messages.append({"role": "user", "content": tool_results})
+            if reached_limit:
+                reason = "time_limit" if time.monotonic() >= deadline else "tool_limit"
+                return self._stop_incomplete(reason, "本轮工具调用或运行时间已达上限")
+
+    def _stop_incomplete(self, reason: str, description: str) -> str:
+        self.last_stop_reason = reason
+        message = f"[{description}，任务提前结束]"
+        self.messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
+        return message
 
     def _request(self, on_text: TextHook | None) -> Any:
         """发一次 API 请求。有 on_text 且 client 支持时走流式接口。"""

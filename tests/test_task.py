@@ -57,6 +57,67 @@ def test_max_loops_stops_runaway_agent():
     assert "最大循环轮数 3" in reply
 
 
+def test_tool_budget_preserves_complete_tool_results_and_next_turn():
+    calls = []
+    class RecordingAPI:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return SimpleNamespace(stop_reason="tool_use", content=[
+                    SimpleNamespace(type="tool_use", id="one", name="unknown", input={}),
+                    SimpleNamespace(type="tool_use", id="two", name="unknown", input={}),
+                ])
+            return _final("已继续")
+
+    agent = Agent(client=RecordingAPI(), max_tool_calls=1)
+    assert "提前结束" in agent.run_turn("开始")
+    assert agent.last_stop_reason == "tool_limit"
+    results = agent.messages[2]["content"]
+    assert [item["tool_use_id"] for item in results] == ["one", "two"]
+    assert "上限" in results[1]["content"]
+    assert agent.run_turn("继续") == "已继续"
+    assert len(calls) == 2
+
+
+def test_turn_deadline_stops_tool_use_without_running_it(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr("minicode.agent.time.monotonic", lambda: clock[0])
+
+    class SlowAPI:
+        def create(self, **kwargs):
+            clock[0] = 2.0
+            return SimpleNamespace(stop_reason="tool_use", content=[
+                SimpleNamespace(type="tool_use", id="one", name="unknown", input={})
+            ])
+
+    agent = Agent(client=SlowAPI(), max_turn_seconds=1)
+    assert "提前结束" in agent.run_turn("开始")
+    assert agent.last_stop_reason == "time_limit"
+    assert len(agent.messages[2]["content"]) == 1
+
+
+def test_api_failure_after_tool_keeps_recoverable_history():
+    class FailingAPI:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(stop_reason="tool_use", content=[
+                    SimpleNamespace(type="tool_use", id="one", name="unknown", input={})
+                ])
+            if self.calls == 2:
+                raise RuntimeError("connection lost")
+            return _final("已恢复")
+
+    agent = Agent(client=FailingAPI())
+    assert "API 请求失败" in agent.run_turn("开始")
+    assert agent.last_stop_reason == "api_error"
+    assert [message["role"] for message in agent.messages] == ["user", "assistant", "user", "assistant"]
+    assert agent.run_turn("继续") == "已恢复"
+
+
 def test_custom_toolset_limits_api_schema():
     captured = []
 
