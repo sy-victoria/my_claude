@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,7 +29,7 @@ def test_linux_workspace_and_file_tools(tmp_path: Path) -> None:
 
 
 def test_linux_cannot_write_outside_workspace_or_use_network(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "sandbox-outside.txt"
+    outside = Path.cwd().parent / f"sandbox-outside-{os.getpid()}.txt"
     command = f"printf forbidden > {outside}"
     argv, env = sandbox_command(command, cwd=tmp_path)
     result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=20)
