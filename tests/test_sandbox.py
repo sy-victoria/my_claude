@@ -1,15 +1,14 @@
 """沙箱命令必须明确限制网络、权限与挂载。"""
 
-import os
 import sys
 from pathlib import Path
 
 import pytest
 
-from minicode.sandbox import sandbox_command
+from minicode.sandbox import sandbox_command, uses_docker
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Docker 后端")
+@pytest.mark.skipif(not uses_docker(), reason="桌面 Docker 后端")
 def test_windows_docker_command_has_isolation_flags(tmp_path, monkeypatch):
     monkeypatch.setattr("minicode.sandbox.shutil.which", lambda name: "docker.exe")
     argv, _ = sandbox_command("echo hello", cwd=tmp_path)
@@ -21,7 +20,7 @@ def test_windows_docker_command_has_isolation_flags(tmp_path, monkeypatch):
     assert argv[-3:] == ["/bin/sh", "-c", "echo hello"]
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Docker 后端")
+@pytest.mark.skipif(not uses_docker(), reason="桌面 Docker 后端")
 def test_windows_local_mcp_mount_is_readonly(tmp_path, monkeypatch):
     monkeypatch.setattr("minicode.sandbox.shutil.which", lambda name: "docker.exe")
     from minicode.sandbox import sandbox_argv
@@ -29,7 +28,7 @@ def test_windows_local_mcp_mount_is_readonly(tmp_path, monkeypatch):
     assert argv[argv.index("--mount") + 1].endswith(",readonly")
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Docker 后端")
+@pytest.mark.skipif(not uses_docker(), reason="桌面 Docker 后端")
 def test_windows_python_and_project_paths_are_mapped(tmp_path, monkeypatch):
     monkeypatch.setattr("minicode.sandbox.shutil.which", lambda name: "docker.exe")
     from minicode.sandbox import sandbox_argv
@@ -38,7 +37,7 @@ def test_windows_python_and_project_paths_are_mapped(tmp_path, monkeypatch):
     assert argv[-2:] == ["python3", "/workspace/server.py"]
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Docker 后端")
+@pytest.mark.skipif(not uses_docker(), reason="桌面 Docker 后端")
 def test_timeout_cleanup_targets_only_generated_container(tmp_path, monkeypatch):
     from minicode.sandbox import stop_sandbox
     monkeypatch.setattr("minicode.sandbox.shutil.which", lambda name: "docker.exe")

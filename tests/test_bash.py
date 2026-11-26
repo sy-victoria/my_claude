@@ -11,11 +11,12 @@ import shutil
 import pytest
 
 from minicode import config
+from minicode.sandbox import uses_docker
 from minicode.tools.bash import bash_tool
 
 pytestmark = pytest.mark.skipif(
-    (os.name == "posix" and not shutil.which("bwrap")) or
-    (os.name == "nt" and os.environ.get("MINICODE_TEST_DOCKER") != "1"),
+    (not uses_docker() and not shutil.which("bwrap")) or
+    (uses_docker() and os.environ.get("MINICODE_TEST_DOCKER") != "1"),
     reason="需要可用的系统级沙箱",
 )
 

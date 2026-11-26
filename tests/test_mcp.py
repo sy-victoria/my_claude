@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from minicode.mcp_client import HttpMcpServer, McpServer, load_mcp_tools, wrap_as_tools
+from minicode.sandbox import uses_docker
 
 
 @pytest.fixture(autouse=True)
 def transport_without_sandbox_on_windows(monkeypatch):
-    """协议测试单独验证传输；Windows 沙箱暂未实现。"""
-    if os.name != "posix" and os.environ.get("MINICODE_TEST_DOCKER") != "1":
+    """默认只验证协议；显式启用后再运行 Docker 集成测试。"""
+    if uses_docker() and os.environ.get("MINICODE_TEST_DOCKER") != "1":
         monkeypatch.setattr("minicode.mcp_client.sandbox_argv", lambda argv, **_kwargs: (argv, os.environ.copy()))
 
 SERVER_PATH = str(Path(__file__).parent / "mini_mcp_server.py")

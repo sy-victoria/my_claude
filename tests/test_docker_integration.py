@@ -1,4 +1,4 @@
-"""Windows Docker 沙箱的实际文件、网络和只读挂载验收。"""
+"""Windows/macOS Docker 沙箱的实际文件、网络和只读挂载验收。"""
 
 import os
 import subprocess
@@ -10,11 +10,11 @@ import pytest
 
 from minicode.agent import Agent
 from minicode.permissions import PermissionManager
-from minicode.sandbox import sandbox_argv, sandbox_command
+from minicode.sandbox import sandbox_argv, sandbox_command, uses_docker
 
 pytestmark = pytest.mark.skipif(
-    os.name != "nt" or os.environ.get("MINICODE_TEST_DOCKER") != "1",
-    reason="需要在 Windows 上显式启用 Docker 集成测试",
+    not uses_docker() or os.environ.get("MINICODE_TEST_DOCKER") != "1",
+    reason="需要在 Windows/macOS 上显式启用 Docker 集成测试",
 )
 
 
