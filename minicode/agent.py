@@ -121,6 +121,7 @@ class Agent:
         # Claude Code 的真实硬约束，防止模型凭想象改文件）。
         self._read_files: set[Path] = set()
         self.context = ContextTracker()
+        self.last_stop_reason: str | None = None
         # compaction 发生时的通知回调（CLI 用它提示用户），(压缩前消息数, 压缩后消息数)
         self.on_compact: Callable[[int, int], None] | None = None
 
@@ -134,6 +135,7 @@ class Agent:
         """
         # 在轮次边界检查是否需要压缩：此刻 messages 一定以完整的
         # assistant 回复结尾，不会把进行到一半的工具调用链压断。
+        self.last_stop_reason = None
         if self.context.should_compact():
             self.compact()
 
@@ -144,6 +146,7 @@ class Agent:
         while True:
             loops += 1
             if self.max_loops is not None and loops > self.max_loops:
+                self.last_stop_reason = "loop_limit"
                 message = f"[已达到最大循环轮数 {self.max_loops}，任务提前结束]"
                 self.messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
                 return message
@@ -159,6 +162,7 @@ class Agent:
             )
 
             if response.stop_reason != "tool_use":
+                self.last_stop_reason = response.stop_reason
                 return self._extract_text(response.content)
 
             tool_results = [

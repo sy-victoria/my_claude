@@ -71,6 +71,15 @@ def test_goal_mode_respects_round_limit():
     assert not finished
 
 
+def test_goal_mode_stops_when_single_turn_reaches_tool_limit():
+    response = SimpleNamespace(stop_reason="tool_use", content=[
+        SimpleNamespace(type="tool_use", id="c", name="list_files", input={})
+    ])
+    agent = Agent(client=FakeAPI([response]), max_loops=1)
+    assert not run_goal_mode(agent, "调查项目", max_rounds=3)
+    assert agent.last_stop_reason == "loop_limit"
+
+
 # ---------- M9c: hooks ----------
 
 

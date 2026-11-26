@@ -362,9 +362,12 @@ def run_goal_mode(agent: Agent, goal: str, max_rounds: int = GOAL_MAX_ROUNDS) ->
         console.print(f"[dim]—— goal 模式 第 {round_no} 轮 ——[/dim]")
         reply = agent.run_turn(prompt)
         console.print(Markdown(reply.replace(GOAL_DONE_MARK, "")))
-        if GOAL_DONE_MARK in reply:
+        if GOAL_DONE_MARK in reply and agent.last_stop_reason in ("end_turn", "stop_sequence"):
             console.print("[green]✔ 目标完成[/green]")
             return True
+        if agent.last_stop_reason == "loop_limit":
+            console.print("[yellow]单轮工具调用达到上限，目标未完成[/yellow]")
+            return False
     console.print(f"[yellow]达到 {max_rounds} 轮上限，目标未确认完成[/yellow]")
     return False
 
@@ -452,7 +455,10 @@ def main() -> None:
                                       rules=settings["permissions"]),
         tools=TOOLS + mcp_tools,
     )
-    agent.on_compact = lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]")
+    agent.on_compact = (lambda b, a: emit_event("compaction", before=b, after=a)) \
+        if args.prompt is not None and args.output_format == "stream-json" else \
+        (None if args.prompt is not None else
+         lambda b, a: console.print(f"[dim]  ⚙ 上下文已压缩：{b} -> {a} 条消息[/dim]"))
     agent.on_tool_result = (lambda name, inp, result: emit_event("tool_result", name=name, result=result)) \
         if args.output_format == "stream-json" and args.prompt is not None else \
         (None if args.prompt else _print_tool_result)
@@ -470,14 +476,17 @@ def main() -> None:
                                    if args.output_format == "stream-json" else None)
             session_path = session.new_session_path()
             session.save(session_path, agent.messages)
+            status = "complete" if agent.last_stop_reason in ("end_turn", "stop_sequence") else "incomplete"
             if args.output_format == "json":
-                print(json.dumps({"result": reply, "session_id": session_path.stem,
+                print(json.dumps({"status": status, "result": reply, "session_id": session_path.stem,
                                   "usage_tokens": agent.context.cumulative_tokens}, ensure_ascii=False))
             elif args.output_format == "stream-json":
-                emit_event("result", result=reply, session_id=session_path.stem,
+                emit_event("result", status=status, result=reply, session_id=session_path.stem,
                            usage_tokens=agent.context.cumulative_tokens)
             else:
                 print(reply)
+            if status != "complete":
+                raise SystemExit(1)
         except Exception as exc:
             if args.output_format == "json":
                 print(json.dumps({"error": str(exc)}, ensure_ascii=False))
@@ -491,7 +500,8 @@ def main() -> None:
     if args.goal:
         if args.mode == "default":
             console.print("[dim]提示：goal 模式建议配合 --mode accept-edits，否则每次写操作都会停下等确认[/dim]")
-        run_goal_mode(agent, args.goal)
+        if not run_goal_mode(agent, args.goal):
+            raise SystemExit(1)
         return
 
     if args.resume:
