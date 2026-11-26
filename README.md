@@ -2,12 +2,12 @@
 
 ## 当前开发版的运行边界
 
-- 模型推理仍通过远程 API；本地 agent 本身可在 CPU 上运行。使用 `--base-url` 和 `--model` 可选择 Anthropic 兼容端点与模型，默认仍是 DeepSeek。
+- 默认模型推理通过远程 DeepSeek API；本地 agent 本身可在 CPU 上运行。`--provider anthropic` 使用 Anthropic 协议兼容端点，`--provider openai` 使用 OpenAI Chat Completions 兼容端点，`--provider ollama --model <已安装模型>` 连接本机 Ollama (`http://127.0.0.1:11434/v1`)，可在 CPU 上完成模型推理；实际速度和内存需求由所选模型决定。OpenAI/Ollama 后端必须明确指定模型名，OpenAI 使用 `OPENAI_API_KEY`，Ollama 本机服务无需 API Key。
 - Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。`.github/workflows/linux-sandbox.yml` 已在 Ubuntu 22.04 完成原生端到端验收（127 通过、8 个条件跳过，[运行记录](https://github.com/sy-victoria/my_claude/actions/runs/45793684813)）。Ubuntu 24.04 GitHub runner 的 AppArmor 默认策略曾阻止 `bwrap` 创建网络命名空间，程序因此保持拒绝执行。
 - Windows 和 macOS 使用本地 Docker 的 Linux 容器运行 shell、文件工具、hooks 和本地 MCP；需要 Docker Desktop 或兼容的本地 Docker 引擎、已共享给 Docker 的项目目录，以及已缓存的 `python:3.11.11-slim-bookworm` 镜像（可用 `MINICODE_SANDBOX_IMAGE` 指定其他已缓存的 Python 镜像）。容器禁用网络、仅挂载工作区与只读程序包，并限制权限和资源。命令按 Linux `sh` 语法执行。Windows 路径已完成集成测试；`.github/workflows/macos-sandbox.yml` 用 macOS Intel runner + Colima 运行实机验收。
 - Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
-- 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。用户可配置 `max_loops`（默认 40）、`api_timeout_seconds`（默认 90）、`max_turn_seconds`（默认 600）、`max_tool_calls`（默认 100），以及 `model` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置可收紧 `max_loops`，但不能指定其他运行上限、新增 `allow` 规则或指定会接收 API Key 的 `base_url`；该地址只能在用户设置或 CLI 参数中指定。API 失败发生在工具执行后时，会保留完整会话记录供恢复。
+- 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。用户可配置 `provider`、`base_url`、`model`、`max_loops`（默认 40）、`api_timeout_seconds`（默认 90）、`max_turn_seconds`（默认 600）、`max_tool_calls`（默认 100），以及 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置可收紧 `max_loops`，但不能指定 provider、其他运行上限、新增 `allow` 规则或指定会接收 API Key 的 `base_url`；后端和地址只能在用户设置或 CLI 参数中指定。API 失败发生在工具执行后时，会保留完整会话记录供恢复。
 - 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`。可配置 `token_env` 使用已有 Bearer token，也可配置 `"oauth": {}` 使用浏览器授权；如果服务不支持动态客户端注册，可在 `oauth.client_id` 中提供已注册的公共客户端 ID，`oauth.scope` 可指定所需范围。OAuth 使用 PKCE、受保护资源和授权服务器元数据，令牌只保存在当前进程内存中；非交互运行不能启动浏览器，需使用 `token_env`。工具清单请求失败时会尝试重新握手一次。远程会话过期时会重新握手，写工具不会自动重放，避免重复副作用。
 
 用户级远程 MCP 配置示例：
@@ -15,6 +15,15 @@
 ```json
 {"servers": {"docs": {"url": "https://example.com/mcp", "oauth": {}}}}
 ```
+
+本机 CPU 模型示例（先安装并启动 Ollama，再拉取一个支持工具调用的模型）：
+
+```bash
+ollama pull <模型名>
+minicode --provider ollama --model <模型名>
+```
+
+OpenAI Chat Completions 兼容服务可用 `OPENAI_API_KEY`、`--provider openai --model <模型名>` 接入；自定义 HTTPS 服务再加 `--base-url <地址>`。本地 Ollama 的工具调用质量取决于模型，运行前应确认所选模型支持 function calling。该后端当前使用非流式请求，`stream-json` 仍输出工具事件和最终结果。
 
 从零复现一个 Claude Code 风格的 coding agent，用于学习 agent 架构。
 
@@ -66,7 +75,7 @@ uv run minicode
 
 ## 当前状态
 
-原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库正在补齐权限、沙箱、远程 MCP 和跨平台验收。Windows 本机单元测试为 118 通过、17 个条件跳过；Linux 原生验收为 127 通过、8 个条件跳过。macOS 沙箱仍待实机验收。
+原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库正在补齐权限、沙箱、远程 MCP 和跨平台验收。Windows 本机单元测试为 127 通过、17 个条件跳过；Linux 原生验收为 127 通过、8 个条件跳过。macOS 沙箱仍待实机验收。
 
 已实现的能力：agent 循环、10 个工具（文件/搜索/bash/子agent/skill/todo）、三档权限系统、系统提示词与 AGENT.md 项目记忆、上下文自动压缩、流式终端（DeepSeek 蓝色主题 + 🐳 吉祥物、交互式菜单、`/resume` 会话恢复、`⏺`/`⎿` 工具调用日志 + 彩色 diff）、skill 系统（渐进式披露）、plan mode、手写 MCP 客户端、goal 无人值守模式、hooks。
 

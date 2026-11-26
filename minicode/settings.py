@@ -17,9 +17,10 @@ def load_settings(cwd: Path | None = None) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ValueError(f"设置文件必须是 JSON 对象：{path}")
         # 项目文件可随仓库传播，不能决定接收用户 API Key 的服务端。
-        if is_project and "base_url" in data:
-            raise ValueError(f"项目设置不能指定 base_url：{path}")
-        for key in ("base_url", "model", "max_loops", "api_timeout_seconds", "max_turn_seconds", "max_tool_calls"):
+        if is_project and ("base_url" in data or "provider" in data):
+            field = "base_url" if "base_url" in data else "provider"
+            raise ValueError(f"项目设置不能指定 {field}：{path}")
+        for key in ("base_url", "provider", "model", "max_loops", "api_timeout_seconds", "max_turn_seconds", "max_tool_calls"):
             if key in data:
                 if key == "max_loops" and (
                     not isinstance(data[key], int) or isinstance(data[key], bool) or data[key] < 1

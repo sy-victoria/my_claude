@@ -33,6 +33,7 @@ import anthropic
 from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
 from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary, split_for_compaction
 from minicode.hooks import load_hooks, run_hooks
+from minicode.openai_backend import OLLAMA_BASE_URL, OPENAI_BASE_URL, OpenAIChatAdapter
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
 from minicode.sandbox import sandbox_argv, stop_sandbox, uses_docker
@@ -80,25 +81,37 @@ class Agent:
         max_loops: int | None = 40,
         base_url: str | None = None,
         model: str | None = None,
+        provider: str = "anthropic",
         api_timeout_seconds: float = 90,
         max_turn_seconds: float = 600,
         max_tool_calls: int = 100,
     ) -> None:
         if api_timeout_seconds <= 0 or max_turn_seconds <= 0 or max_tool_calls < 1:
             raise ValueError("请求超时、单轮时限和工具调用上限必须为正数")
+        if provider not in {"anthropic", "openai", "ollama"}:
+            raise ValueError("provider 必须是 anthropic、openai 或 ollama")
+        if provider != "anthropic" and not model:
+            raise ValueError("OpenAI/Ollama 后端必须明确指定 model")
+        default_url = {"anthropic": BASE_URL, "openai": OPENAI_BASE_URL,
+                       "ollama": OLLAMA_BASE_URL}[provider]
         if client is not None:
             self._messages_api = client
+        elif provider != "anthropic":
+            if provider == "openai" and not api_key:
+                raise ValueError("OpenAI 后端必须提供 OPENAI_API_KEY")
+            self._messages_api = OpenAIChatAdapter(base_url or default_url, api_key, api_timeout_seconds)
         else:
             if not api_key:
                 raise ValueError("必须提供 api_key（或直接传入 client 用于测试）")
-            real_client = anthropic.Anthropic(api_key=api_key, base_url=base_url or BASE_URL,
+            real_client = anthropic.Anthropic(api_key=api_key, base_url=base_url or default_url,
                                               timeout=api_timeout_seconds, max_retries=1)
             self._messages_api = real_client.messages
 
         self.api_key = api_key
-        self.base_url = base_url or BASE_URL
+        self.base_url = base_url or default_url
+        self.provider = provider
 
-        self.tier = tier  # 当前档位标签（"sonnet"/"opus"），供终端显示用
+        self.tier = tier if provider == "anthropic" else provider
         self.model = model or resolve_model(tier)
         self.messages: list[dict[str, Any]] = []
         self.on_tool_call = on_tool_call

@@ -95,6 +95,11 @@ def handle_slash(command: str, agent: Agent) -> str:
         agent.permissions.mode = args[0]
         return f"权限模式已切换为 {args[0]}。"
     if name == "/model":
+        if agent.provider != "anthropic":
+            if not args:
+                return f"用法：/model <模型名>（当前：{agent.model}）"
+            agent.model = args[0]
+            return f"模型已切换为 {agent.model}，下一次请求生效。"
         if not args or args[0] not in TIER_MODELS:
             return f"用法：/model {'|'.join(TIER_MODELS)}（当前模型：{agent.tier}，{agent.model}）"
         agent.tier = args[0]
@@ -375,7 +380,9 @@ def run_goal_mode(agent: Agent, goal: str, max_rounds: int = GOAL_MAX_ROUNDS) ->
 def main() -> None:
     parser = argparse.ArgumentParser(prog="minicode")
     parser.add_argument("--tier", default=DEFAULT_TIER, choices=list(TIER_MODELS), help="模型档位")
-    parser.add_argument("--base-url", help="Anthropic 兼容端点 URL；默认 DeepSeek")
+    parser.add_argument("--base-url", help="所选 provider 的 API 基础 URL")
+    parser.add_argument("--provider", choices=("anthropic", "openai", "ollama"),
+                        help="模型接口：Anthropic 兼容、OpenAI Chat Completions 兼容或本地 Ollama")
     parser.add_argument("--model", help="具体模型名；覆盖 --tier 的初始映射")
     parser.add_argument("--mode", default="default", choices=list(MODES), help="权限模式")
     parser.add_argument("--resume", action="store_true", help="恢复最近一次会话")
@@ -386,33 +393,53 @@ def main() -> None:
     args = parser.parse_args()
     if args.prompt is not None and args.output_format != "text" and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    settings = load_settings()
+
+    def config_error(message: str) -> None:
+        if args.prompt is not None and args.output_format in ("json", "stream-json"):
+            payload = {"error": message}
+            if args.output_format == "stream-json":
+                payload["type"] = "error"
+            print(json.dumps(payload, ensure_ascii=False))
+            raise SystemExit(2)
+        parser.error(message)
+
+    try:
+        settings = load_settings()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        config_error(str(exc))
+    provider = args.provider or settings.get("provider", "anthropic")
+    if provider not in ("anthropic", "openai", "ollama"):
+        config_error("provider 必须是 anthropic、openai 或 ollama")
+    selected_model = args.model or settings.get("model")
+    if provider != "anthropic" and not selected_model:
+        config_error("OpenAI/Ollama 后端必须通过 --model 或用户设置指定模型名")
     max_loops = settings.get("max_loops", 40)
     if not isinstance(max_loops, int) or isinstance(max_loops, bool) or max_loops < 1:
-        parser.error("max_loops 必须是正整数")
+        config_error("max_loops 必须是正整数")
     max_tool_calls = settings.get("max_tool_calls", 100)
     if not isinstance(max_tool_calls, int) or isinstance(max_tool_calls, bool) or max_tool_calls < 1:
-        parser.error("max_tool_calls 必须是正整数")
+        config_error("max_tool_calls 必须是正整数")
     for key in ("api_timeout_seconds", "max_turn_seconds"):
         value = settings.get(key, 90 if key == "api_timeout_seconds" else 600)
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 86400:
-            parser.error(f"{key} 必须是 0 到 86400 之间的数字")
+            config_error(f"{key} 必须是 0 到 86400 之间的数字")
         settings[key] = value
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if args.prompt is not None and not api_key:
+    key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+    api_key = None if provider == "ollama" else os.environ.get(key_name)
+    if args.prompt is not None and provider != "ollama" and not api_key:
         if args.output_format in ("json", "stream-json"):
-            print(json.dumps({"type": "error", "error": "缺少 ANTHROPIC_API_KEY"}, ensure_ascii=False))
+            print(json.dumps({"type": "error", "error": f"缺少 {key_name}"}, ensure_ascii=False))
         else:
-            print("缺少 ANTHROPIC_API_KEY", file=sys.stderr)
+            print(f"缺少 {key_name}", file=sys.stderr)
         raise SystemExit(2)
-    if not api_key:
+    if provider != "ollama" and not api_key:
         # 首次体验友好一点：不直接报错退出，而是当场问一次。只留在这个
         # 进程的内存里传给 Agent，不写环境变量、不落盘——CLAUDE.md red line。
         # 想长期免输入，请按 README 把 export 写进自己的 shell 配置文件。
         console.print(
-            "[secondary]没有检测到环境变量 ANTHROPIC_API_KEY。[/secondary]\n"
-            "[dim]去 DeepSeek 开放平台控制台生成一个 key（sk- 开头）后粘贴进来；"
+            f"[secondary]没有检测到环境变量 {key_name}。[/secondary]\n"
+            "[dim]请输入对应模型服务的 API Key；"
             "只在这次运行里生效，不会保存到任何文件。[/dim]"
         )
         try:
@@ -429,7 +456,7 @@ def main() -> None:
     # 一眼就知道启动的是 minicode（而不是被淹没在一堆日志里）。
     banner_body = (
         f"[banner]{MASCOT} 欢迎使用 minicode！[/banner]\n\n"
-        f"[secondary]档位 {args.tier}（{resolve_model(args.tier)}） · 权限 {args.mode}[/secondary]\n"
+        f"[secondary]后端 {provider} · 模型 {selected_model or resolve_model(args.tier)} · 权限 {args.mode}[/secondary]\n"
         f"[secondary]cwd: {os.getcwd()}[/secondary]\n\n"
         f"[dim]/help 查看命令[/dim]"
     )
@@ -461,22 +488,26 @@ def main() -> None:
     def emit_event(kind: str, **payload: object) -> None:
         print(json.dumps({"type": kind, **payload}, ensure_ascii=False), flush=True)
 
-    agent = Agent(
-        api_key=api_key,
-        tier=args.tier,
-        base_url=args.base_url or settings.get("base_url"),
-        model=args.model or settings.get("model"),
-        max_loops=max_loops,
-        api_timeout_seconds=settings["api_timeout_seconds"],
-        max_turn_seconds=settings["max_turn_seconds"],
-        max_tool_calls=max_tool_calls,
-        on_tool_call=(lambda name, inp: emit_event("tool_call", name=name, input=inp))
-        if args.output_format == "stream-json" and args.prompt is not None else
-        (None if args.prompt else _print_tool_call),
-        permissions=PermissionManager(mode=args.mode, ask_user=(lambda _n, _i: "n") if args.prompt else None,
-                                      rules=settings["permissions"]),
-        tools=TOOLS + mcp_tools,
-    )
+    try:
+        agent = Agent(
+            api_key=api_key,
+            tier=args.tier,
+            base_url=args.base_url or settings.get("base_url"),
+            model=args.model or settings.get("model"),
+            provider=provider,
+            max_loops=max_loops,
+            api_timeout_seconds=settings["api_timeout_seconds"],
+            max_turn_seconds=settings["max_turn_seconds"],
+            max_tool_calls=max_tool_calls,
+            on_tool_call=(lambda name, inp: emit_event("tool_call", name=name, input=inp))
+            if args.output_format == "stream-json" and args.prompt is not None else
+            (None if args.prompt else _print_tool_call),
+            permissions=PermissionManager(mode=args.mode, ask_user=(lambda _n, _i: "n") if args.prompt else None,
+                                          rules=settings["permissions"]),
+            tools=TOOLS + mcp_tools,
+        )
+    except (OSError, ValueError) as exc:
+        config_error(str(exc))
     agent.on_compact = (lambda b, a: emit_event("compaction", before=b, after=a)) \
         if args.prompt is not None and args.output_format == "stream-json" else \
         (None if args.prompt is not None else
@@ -560,7 +591,9 @@ def main() -> None:
             # 先查内置命令，再查 skill（/commit 这类），都没有才报未知
             builtin = set(BUILTIN_COMMANDS)
             # 这几个命令不带参数时不甩一句"用法：..."就完事，而是弹交互式选择列表
-            pickers = {"/model": prompt_model_choice, "/mode": prompt_mode_choice, "/plan": prompt_plan_choice}
+            pickers = {"/mode": prompt_mode_choice, "/plan": prompt_plan_choice}
+            if agent.provider == "anthropic":
+                pickers["/model"] = prompt_model_choice
             if user_input in pickers:
                 try:
                     chosen = pickers[user_input](agent)

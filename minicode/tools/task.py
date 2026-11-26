@@ -55,6 +55,7 @@ def _make_subagent(mode: str = "explore", max_loops: int = MAX_SUB_LOOPS) -> Any
         tier=parent.tier if parent is not None else "sonnet",
         model=parent.model if parent is not None else None,
         base_url=parent.base_url if parent is not None else None,
+        provider=parent.provider if parent is not None else "anthropic",
         tools=build_subagent_tools(mode),
         max_loops=max_loops,
         api_timeout_seconds=parent.api_timeout_seconds if parent is not None else 90,

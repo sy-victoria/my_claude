@@ -56,3 +56,50 @@ def test_headless_mcp_auth_error_is_machine_readable(monkeypatch, capsys, output
     event = json.loads(capsys.readouterr().out.strip())
     assert "OAuth" in event["error"]
     assert event.get("type") == ("error" if output_format == "stream-json" else None)
+
+
+def test_headless_ollama_does_not_require_cloud_key(tmp_path, monkeypatch, capsys):
+    captured = {}
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.messages = []
+            self.context = SimpleNamespace(cumulative_tokens=0)
+            self.last_stop_reason = "end_turn"
+            self.on_compact = None
+            self.on_tool_result = None
+
+        def run_turn(self, _prompt, on_text=None):
+            return "本地完成"
+
+    monkeypatch.setattr(cli, "Agent", FakeAgent)
+    monkeypatch.setattr(mcp_client, "load_mcp_tools", lambda **_kwargs: [])
+    monkeypatch.setattr(session, "SESSION_DIR", tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(sys, "argv", ["minicode", "-p", "任务", "--provider", "ollama",
+                                   "--model", "local-model", "--output-format", "json"])
+    cli.main()
+    result = json.loads(capsys.readouterr().out.strip())
+    assert result["status"] == "complete"
+    assert captured["provider"] == "ollama"
+    assert captured["api_key"] is None
+
+
+def test_headless_invalid_provider_config_is_json(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_settings", lambda: {"provider": "invalid", "permissions": {}})
+    monkeypatch.setattr(sys, "argv", ["minicode", "-p", "任务", "--output-format", "json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert "provider" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_headless_ollama_requires_model_in_json(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_settings", lambda: {"permissions": {}})
+    monkeypatch.setattr(sys, "argv", ["minicode", "-p", "任务", "--provider", "ollama",
+                                   "--output-format", "json"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert "模型名" in json.loads(capsys.readouterr().out)["error"]

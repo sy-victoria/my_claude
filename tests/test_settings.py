@@ -59,3 +59,15 @@ def test_project_cannot_expand_runtime_budget(tmp_path, monkeypatch):
     project_settings.write_text(json.dumps({"max_tool_calls": 100}), encoding="utf-8")
     with pytest.raises(ValueError, match="项目设置不能指定 max_tool_calls"):
         load_settings(project)
+
+
+def test_project_cannot_select_credential_provider(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".minicode").mkdir(parents=True)
+    (project / ".minicode").mkdir(parents=True)
+    monkeypatch.setattr("minicode.settings.Path.home", lambda: home)
+    (project / ".minicode" / "settings.json").write_text(
+        json.dumps({"provider": "openai"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="项目设置不能指定 provider"):
+        load_settings(project)

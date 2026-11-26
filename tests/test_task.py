@@ -149,3 +149,17 @@ def test_work_subagent_inherits_parent_policy_and_model(tmp_path, monkeypatch):
     allowed, _ = child.permissions.check(next(t for t in child.tools if t.name == "bash"),
                                           {"command": "echo hi"})
     assert not allowed
+
+
+def test_work_subagent_inherits_local_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(task, "subagent_factory", None)
+    parent = Agent(provider="ollama", model="local-model", client=FakeAPI([]),
+                   permissions=PermissionManager(cwd=tmp_path))
+    token = task.current_parent.set(parent)
+    try:
+        child = task._make_subagent("work")
+    finally:
+        task.current_parent.reset(token)
+    assert child.provider == "ollama"
+    assert child.model == "local-model"
+    assert child.api_key is None
