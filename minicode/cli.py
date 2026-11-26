@@ -443,7 +443,18 @@ def main() -> None:
     from minicode.mcp_client import load_mcp_tools
     from minicode.tools import TOOLS
 
-    mcp_tools = load_mcp_tools()
+    try:
+        mcp_tools = load_mcp_tools(interactive=args.prompt is None)
+    except Exception as exc:
+        if args.prompt is None:
+            raise
+        if args.output_format == "json":
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        elif args.output_format == "stream-json":
+            print(json.dumps({"type": "error", "error": str(exc)}, ensure_ascii=False))
+        else:
+            print(f"MCP 加载失败：{exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     if mcp_tools and args.prompt is None:
         console.print(f"[dim]已加载 {len(mcp_tools)} 个 MCP 工具：{', '.join(t.name for t in mcp_tools)}[/dim]")
 

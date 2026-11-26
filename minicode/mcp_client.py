@@ -36,6 +36,7 @@ from typing import Any
 
 from minicode.tools.base import Tool
 from minicode.sandbox import sandbox_argv, stop_sandbox
+from minicode.mcp_oauth import OAuthClient, open_no_redirect
 
 PROTOCOL_VERSION = "2025-06-18"
 REQUEST_TIMEOUT_SECONDS = 15
@@ -139,17 +140,24 @@ class McpServer:
 class HttpMcpServer:
     """最小 Streamable HTTP MCP 客户端，支持 JSON 与 SSE 响应。"""
 
-    def __init__(self, name: str, url: str, token_env: str | None = None) -> None:
+    def __init__(self, name: str, url: str, token_env: str | None = None,
+                 oauth: dict[str, Any] | None = None, interactive: bool = True) -> None:
         parsed = urlparse(url)
         if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}):
             raise ValueError("远程 MCP 必须使用 HTTPS（本机可使用 HTTP）")
         self.name = name
         self.url = url
         self.token_env = token_env
+        if token_env and oauth is not None:
+            raise ValueError("token_env 和 oauth 不能同时配置")
+        if oauth is not None and not isinstance(oauth, dict):
+            raise ValueError("oauth 配置必须是 JSON 对象")
+        self.oauth = OAuthClient(url, oauth.get("client_id"), oauth.get("scope"), interactive) if oauth is not None else None
         self.session_id: str | None = None
         self._id = 0
 
-    def _send(self, method: str, params: dict[str, Any] | None = None, notify: bool = False) -> dict[str, Any]:
+    def _send(self, method: str, params: dict[str, Any] | None = None, notify: bool = False,
+              auth_retry: bool = True) -> dict[str, Any]:
         body: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if not notify:
             self._id += 1
@@ -165,15 +173,22 @@ class HttpMcpServer:
             if not token:
                 raise ValueError(f"缺少 MCP 认证环境变量 {self.token_env}")
             headers["Authorization"] = f"Bearer {token}"
+        elif self.oauth:
+            token = self.oauth.token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(self.url, json.dumps(body).encode(), headers=headers, method="POST")
         try:
-            response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS)
+            response = open_no_redirect(request, timeout=REQUEST_TIMEOUT_SECONDS)
         except urllib.error.HTTPError as exc:
             if exc.code == 404 and self.session_id:
                 self.session_id = None
                 raise McpSessionExpired(f"MCP server {self.name} 会话已过期") from exc
             if exc.code == 401:
-                raise PermissionError(f"MCP server {self.name} 认证失败；请检查 token_env") from exc
+                if self.oauth and auth_retry:
+                    self.oauth.authorize(exc.headers.get("WWW-Authenticate", ""))
+                    return self._send(method, params, notify, auth_retry=False)
+                raise PermissionError(f"MCP server {self.name} 认证失败；请检查认证配置") from exc
             raise
         with response:
             self.session_id = response.headers.get("Mcp-Session-Id", self.session_id)
@@ -232,9 +247,14 @@ class HttpMcpServer:
 
     def close(self) -> None:
         if self.session_id:
-            request = urllib.request.Request(self.url, headers={"Mcp-Session-Id": self.session_id}, method="DELETE")
+            headers = {"Mcp-Session-Id": self.session_id, "MCP-Protocol-Version": PROTOCOL_VERSION}
+            if self.token_env and os.environ.get(self.token_env):
+                headers["Authorization"] = f"Bearer {os.environ[self.token_env]}"
+            elif self.oauth and self.oauth.access_token:
+                headers["Authorization"] = f"Bearer {self.oauth.access_token}"
+            request = urllib.request.Request(self.url, headers=headers, method="DELETE")
             try:
-                urllib.request.urlopen(request, timeout=2).close()
+                open_no_redirect(request, timeout=2).close()
             except Exception:
                 pass
 
@@ -260,7 +280,7 @@ def wrap_as_tools(server: McpServer | HttpMcpServer) -> list[Tool]:
     return tools
 
 
-def load_mcp_tools(cwd: Path | None = None) -> list[Tool]:
+def load_mcp_tools(cwd: Path | None = None, interactive: bool = True) -> list[Tool]:
     """读 .minicode/mcp.json，启动所有 server，返回全部远程工具。
 
     在 CLI 入口调用一次，而不是在 Agent 里——避免每个子 agent 都重复
@@ -280,7 +300,7 @@ def load_mcp_tools(cwd: Path | None = None) -> list[Tool]:
                 raise ValueError("远程 MCP 必须配置在用户级 ~/.minicode/mcp.json，不能从项目配置自动连接")
             servers[name] = (spec, is_user)
     for name, (spec, _is_user) in servers.items():
-        server = (HttpMcpServer(name, spec["url"], spec.get("token_env")) if "url" in spec
+        server = (HttpMcpServer(name, spec["url"], spec.get("token_env"), spec.get("oauth"), interactive) if "url" in spec
                   else McpServer(name, spec["command"]))
         atexit.register(server.close)
         server.initialize()

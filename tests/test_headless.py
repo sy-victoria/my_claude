@@ -25,7 +25,7 @@ def test_json_run_reports_loop_limit_without_terminal_noise(tmp_path, monkeypatc
             return "未完成"
 
     monkeypatch.setattr(cli, "Agent", FakeAgent)
-    monkeypatch.setattr(mcp_client, "load_mcp_tools", lambda: [])
+    monkeypatch.setattr(mcp_client, "load_mcp_tools", lambda **_kwargs: [])
     monkeypatch.setattr(session, "SESSION_DIR", tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(sys, "argv", ["minicode", "-p", "任务", "--output-format", output_format])
@@ -40,3 +40,19 @@ def test_json_run_reports_loop_limit_without_terminal_noise(tmp_path, monkeypatc
     assert result.get("status") == "incomplete", result
     assert result["result"] == "未完成"
     assert result["usage_tokens"] == 12
+
+
+@pytest.mark.parametrize("output_format", ["json", "stream-json"])
+def test_headless_mcp_auth_error_is_machine_readable(monkeypatch, capsys, output_format):
+    def fail_mcp(**_kwargs):
+        raise PermissionError("非交互运行无法完成 MCP OAuth 登录")
+
+    monkeypatch.setattr(mcp_client, "load_mcp_tools", fail_mcp)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(sys, "argv", ["minicode", "-p", "任务", "--output-format", output_format])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1
+    event = json.loads(capsys.readouterr().out.strip())
+    assert "OAuth" in event["error"]
+    assert event.get("type") == ("error" if output_format == "stream-json" else None)

@@ -8,7 +8,13 @@
 - Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
 - 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。用户可配置 `max_loops`（默认 40）、`api_timeout_seconds`（默认 90）、`max_turn_seconds`（默认 600）、`max_tool_calls`（默认 100），以及 `model` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置可收紧 `max_loops`，但不能指定其他运行上限、新增 `allow` 规则或指定会接收 API Key 的 `base_url`；该地址只能在用户设置或 CLI 参数中指定。API 失败发生在工具执行后时，会保留完整会话记录供恢复。
-- 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`，可用 `token_env` 指向 Bearer token 环境变量。尚未实现 OAuth 登录；工具清单请求失败时会尝试重新握手一次。远程会话过期时会重新握手，写工具不会自动重放，避免重复副作用。
+- 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`。可配置 `token_env` 使用已有 Bearer token，也可配置 `"oauth": {}` 使用浏览器授权；如果服务不支持动态客户端注册，可在 `oauth.client_id` 中提供已注册的公共客户端 ID，`oauth.scope` 可指定所需范围。OAuth 使用 PKCE、受保护资源和授权服务器元数据，令牌只保存在当前进程内存中；非交互运行不能启动浏览器，需使用 `token_env`。工具清单请求失败时会尝试重新握手一次。远程会话过期时会重新握手，写工具不会自动重放，避免重复副作用。
+
+用户级远程 MCP 配置示例：
+
+```json
+{"servers": {"docs": {"url": "https://example.com/mcp", "oauth": {}}}}
+```
 
 从零复现一个 Claude Code 风格的 coding agent，用于学习 agent 架构。
 
@@ -49,8 +55,8 @@ echo 'export ANTHROPIC_API_KEY=sk-xxx' >> ~/.zshrc && source ~/.zshrc
 ## 本地开发（要改代码用这个）
 
 ```bash
-git clone https://github.com/limit-coding/coding-agent.git
-cd coding-agent
+git clone https://github.com/sy-victoria/my_claude.git
+cd my_claude
 export ANTHROPIC_API_KEY=sk-...   # 你的 DeepSeek API Key（走 DeepSeek 的 Anthropic 协议兼容端点）
 uv sync
 uv run minicode
@@ -60,7 +66,7 @@ uv run minicode
 
 ## 当前状态
 
-**全部 10 个里程碑（M0~M9 含 6 个 M9 扩展）已完成**，100 个测试全绿，每个里程碑都经过真实 API 验收。
+原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库正在补齐权限、沙箱、远程 MCP 和跨平台验收。当前本机单元测试为 117 通过、13 个因平台条件跳过；Linux 和 macOS 的系统级沙箱仍待实机验收。
 
 已实现的能力：agent 循环、10 个工具（文件/搜索/bash/子agent/skill/todo）、三档权限系统、系统提示词与 AGENT.md 项目记忆、上下文自动压缩、流式终端（DeepSeek 蓝色主题 + 🐳 吉祥物、交互式菜单、`/resume` 会话恢复、`⏺`/`⎿` 工具调用日志 + 彩色 diff）、skill 系统（渐进式披露）、plan mode、手写 MCP 客户端、goal 无人值守模式、hooks。
 
