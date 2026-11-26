@@ -18,6 +18,8 @@
 
 import subprocess
 import threading
+from contextvars import ContextVar
+from pathlib import Path
 
 from minicode import config
 from minicode.sandbox import sandbox_command, stop_sandbox
@@ -36,6 +38,8 @@ BLACKLIST: list[str] = [
     ":(){",  # fork 炸弹
 ]
 
+current_workspace: ContextVar[Path | None] = ContextVar("minicode_bash_workspace", default=None)
+
 
 def _truncate(text: str) -> str:
     limit = config.BASH_MAX_OUTPUT_CHARS
@@ -52,7 +56,7 @@ def _run(tool_input: dict) -> str:
             return f"错误：命令包含被禁止的操作 {banned!r}，已拒绝执行。请换一种安全的做法。"
 
     try:
-        argv, env = sandbox_command(command)
+        argv, env = sandbox_command(command, cwd=current_workspace.get())
     except RuntimeError as exc:
         return f"错误：{exc}"
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)

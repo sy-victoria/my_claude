@@ -7,8 +7,11 @@
 """
 
 from types import SimpleNamespace
+import os
+import sys
 
 from minicode.agent import Agent
+from minicode.permissions import PermissionManager
 
 
 class FakeMessagesAPI:
@@ -109,3 +112,15 @@ def test_on_tool_call_hook_receives_name_and_input(tmp_path):
     agent.run_turn("列出文件")
 
     assert seen == [("list_files", {"path": str(tmp_path)})]
+
+
+def test_bash_uses_agent_workspace_not_process_directory(tmp_path, monkeypatch):
+    seen = []
+    def fake_sandbox(command, cwd=None):
+        seen.append((command, cwd))
+        return [sys.executable, "-c", "print('ok')"], os.environ.copy()
+
+    monkeypatch.setattr("minicode.tools.bash.sandbox_command", fake_sandbox)
+    agent = Agent(client=FakeMessagesAPI([]), permissions=PermissionManager(mode="yolo", cwd=tmp_path))
+    assert "ok" in agent._run_tool("bash", {"command": "echo ok"})
+    assert seen == [("echo ok", tmp_path)]

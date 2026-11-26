@@ -333,6 +333,13 @@ class Agent:
                     current_parent.reset(token)
             elif name in {"read_file", "list_files", "glob", "grep", "edit_file", "write_file"}:
                 result = self._run_file_tool(name, tool_input)
+            elif name == "bash":
+                from minicode.tools.bash import current_workspace
+                token = current_workspace.set(self.permissions.cwd)
+                try:
+                    result = tool.run(tool_input)
+                finally:
+                    current_workspace.reset(token)
             else:
                 result = tool.run(tool_input)
             if name == "read_file" and not result.startswith("错误"):

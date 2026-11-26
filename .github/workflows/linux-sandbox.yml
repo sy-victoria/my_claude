@@ -1,0 +1,29 @@
+name: Linux sandbox acceptance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install bubblewrap and Python package
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          python -m pip install -e . pytest
+      - name: Check user namespace support
+        run: bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- true
+      - name: Run Linux unit and integration tests
+        run: python -m pytest -q

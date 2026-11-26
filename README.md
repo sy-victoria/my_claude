@@ -3,7 +3,7 @@
 ## 当前开发版的运行边界
 
 - 模型推理仍通过远程 API；本地 agent 本身可在 CPU 上运行。使用 `--base-url` 和 `--model` 可选择 Anthropic 兼容端点与模型，默认仍是 DeepSeek。
-- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。此实现尚未完成 Linux 实机验收。
+- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。`.github/workflows/linux-sandbox.yml` 在 Ubuntu 24.04 上运行原生端到端测试；结果以 GitHub Actions 为准。
 - Windows 和 macOS 使用本地 Docker 的 Linux 容器运行 shell、文件工具、hooks 和本地 MCP；需要 Docker Desktop 的 Linux 引擎和已缓存的 `python:3.11.11-slim-bookworm` 镜像（可用 `MINICODE_SANDBOX_IMAGE` 指定其他已缓存的 Python 镜像）。容器禁用网络、仅挂载工作区与只读程序包，并限制权限和资源。命令按 Linux `sh` 语法执行。Windows 路径已完成集成测试；macOS 路径尚待实机验收。
 - Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
@@ -66,7 +66,7 @@ uv run minicode
 
 ## 当前状态
 
-原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库正在补齐权限、沙箱、远程 MCP 和跨平台验收。当前本机单元测试为 117 通过、13 个因平台条件跳过；Linux 和 macOS 的系统级沙箱仍待实机验收。
+原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库正在补齐权限、沙箱、远程 MCP 和跨平台验收。当前 Windows 本机单元测试为 118 通过、16 个因平台条件跳过；Linux 和 macOS 的系统级沙箱仍待实机验收。
 
 已实现的能力：agent 循环、10 个工具（文件/搜索/bash/子agent/skill/todo）、三档权限系统、系统提示词与 AGENT.md 项目记忆、上下文自动压缩、流式终端（DeepSeek 蓝色主题 + 🐳 吉祥物、交互式菜单、`/resume` 会话恢复、`⏺`/`⎿` 工具调用日志 + 彩色 diff）、skill 系统（渐进式披露）、plan mode、手写 MCP 客户端、goal 无人值守模式、hooks。
 

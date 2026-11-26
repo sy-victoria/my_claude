@@ -28,6 +28,16 @@ def test_file_tools_inside_docker():
         assert "sandbox-file-ok" in agent._run_tool("read_file", {"path": str(target)})
 
 
+def test_bash_uses_selected_agent_workspace():
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+        workspace = Path(directory)
+        agent = Agent(client=SimpleNamespace(create=lambda **_kwargs: None),
+                      permissions=PermissionManager(mode="yolo", cwd=workspace))
+        assert "成功" in agent._run_tool("bash", {"command": "printf sandbox-bash-ok > probe.txt"})
+        assert (workspace / "probe.txt").read_text() == "sandbox-bash-ok"
+        assert not Path("probe.txt").exists()
+
+
 def test_readonly_mount_rejects_write():
     argv, env = sandbox_argv(["/bin/sh", "-c", "touch /workspace/should-not-exist"],
                              writable_workspace=False)
