@@ -34,7 +34,7 @@ from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary,
 from minicode.hooks import load_hooks, run_hooks
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
-from minicode.sandbox import sandbox_argv
+from minicode.sandbox import sandbox_argv, stop_sandbox, uses_docker
 from minicode.tools import TOOLS
 from minicode.tools.base import Tool
 
@@ -276,7 +276,7 @@ class Agent:
         # agent 层而不是工具内部。放在权限检查之前——注定失败的调用没必要
         # 再去打扰用户确认。
         if name == "edit_file" and tool_input.get("old_str"):
-            target = Path(tool_input.get("path", "")).resolve()
+            target = (self.permissions.cwd / tool_input.get("path", "")).resolve()
             if target.exists() and target not in self._read_files:
                 return (
                     f"错误：编辑前必须先读取文件。请先用 read_file 读取 "
@@ -302,23 +302,39 @@ class Agent:
                     result = tool.run(tool_input)
                 finally:
                     current_parent.reset(token)
-            elif os.name == "posix" and name in {"read_file", "list_files", "glob", "grep", "edit_file", "write_file"}:
-                argv, env = sandbox_argv([sys.executable, "-m", "minicode.tool_worker"], self.permissions.cwd)
-                worker = subprocess.run(argv, input=json.dumps({"name": name, "input": tool_input}),
-                                        text=True, capture_output=True, timeout=30, env=env)
-                if worker.returncode:
-                    raise RuntimeError(worker.stderr.strip() or worker.stdout.strip())
-                result = json.loads(worker.stdout)["result"]
+            elif name in {"read_file", "list_files", "glob", "grep", "edit_file", "write_file"}:
+                result = self._run_file_tool(name, tool_input)
             else:
                 result = tool.run(tool_input)
             if name == "read_file" and not result.startswith("错误"):
-                self._read_files.add(Path(tool_input.get("path", "")).resolve())
+                self._read_files.add((self.permissions.cwd / tool_input.get("path", "")).resolve())
             run_hooks(self.hooks, "post_tool", name, tool_input, cwd=self.permissions.cwd)
             return result
         except Exception as exc:
             # 工具报错不能让整个 agent 崩溃：把错误信息当成一条 tool_result
             # 返回给模型，模型看得懂错误、通常会自己调整下一步操作。
             return f"工具执行出错：{exc}"
+
+    def _run_file_tool(self, name: str, tool_input: dict[str, Any]) -> str:
+        """文件操作通过隔离进程执行；Windows 路径映射到容器工作区。"""
+        worker_input = dict(tool_input)
+        if uses_docker():
+            path = (self.permissions.cwd / worker_input.get("path", ".")).resolve()
+            relative = path.relative_to(self.permissions.cwd)
+            worker_input["path"] = "/workspace" + ("/" + relative.as_posix() if relative.parts else "")
+        argv, env = sandbox_argv([sys.executable, "-m", "minicode.tool_worker"], self.permissions.cwd)
+        try:
+            worker = subprocess.run(argv, input=json.dumps({"name": name, "input": worker_input}),
+                                    text=True, encoding="utf-8", capture_output=True, timeout=30, env=env)
+        except subprocess.TimeoutExpired:
+            stop_sandbox(argv, env)
+            raise
+        if worker.returncode:
+            raise RuntimeError(worker.stderr.strip() or worker.stdout.strip())
+        result: str = json.loads(worker.stdout)["result"]
+        if uses_docker() and name in {"glob", "grep", "edit_file", "write_file"}:
+            result = result.replace("/workspace/", self.permissions.cwd.as_posix() + "/")
+        return result
 
     @staticmethod
     def _extract_text(content: list[Any]) -> str:

@@ -4,7 +4,8 @@
 
 - 模型推理仍通过远程 API；本地 agent 本身可在 CPU 上运行。使用 `--base-url` 和 `--model` 可选择 Anthropic 兼容端点与模型，默认仍是 DeepSeek。
 - Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。此实现尚未完成 Linux 实机验收。
-- Windows/macOS 尚无系统级执行沙箱；这些平台上的 shell、hooks 和本地 MCP 会拒绝运行。Windows 文件工具仍通过路径权限检查执行。
+- Windows 和 macOS 使用本地 Docker 的 Linux 容器运行 shell、文件工具、hooks 和本地 MCP；需要 Docker Desktop 的 Linux 引擎和已缓存的 `python:3.11.11-slim-bookworm` 镜像（可用 `MINICODE_SANDBOX_IMAGE` 指定其他已缓存的 Python 镜像）。容器禁用网络、仅挂载工作区与只读程序包，并限制权限和资源。命令按 Linux `sh` 语法执行。Windows 路径已完成集成测试；macOS 路径尚待实机验收。
+- Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环上限或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
 - 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。可配置 `model`、`max_loops` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置不能新增 `allow` 规则，也不能指定会接收 API Key 的 `base_url`；该地址只能在用户设置或 CLI 参数中指定。
 - 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`，可用 `token_env` 指向 Bearer token 环境变量。尚未实现 OAuth 登录；工具清单请求失败时会尝试重新握手一次。

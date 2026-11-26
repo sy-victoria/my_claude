@@ -20,7 +20,7 @@ import subprocess
 import threading
 
 from minicode import config
-from minicode.sandbox import sandbox_command
+from minicode.sandbox import sandbox_command, stop_sandbox
 from minicode.tools.base import Tool
 
 # 教学用的简化黑名单：真实产品（Claude Code）用的是更精细的命令解析 + 规则
@@ -78,6 +78,7 @@ def _run(tool_input: dict) -> str:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+        stop_sandbox(argv, env)
         return (
             f"错误：命令执行超过 {config.BASH_TIMEOUT_SECONDS} 秒已被强制终止。"
             "如果是长时间运行的命令，考虑换成能快速返回的等价操作。"

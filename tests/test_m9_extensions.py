@@ -98,7 +98,8 @@ def _tool_use(name, tool_input):
     )
 
 
-@pytest.mark.skipif(os.name != "posix", reason="hooks require Linux sandbox")
+@pytest.mark.skipif(os.name != "posix" and os.environ.get("MINICODE_TEST_DOCKER") != "1",
+                    reason="hooks require an available sandbox")
 def test_pre_hook_nonzero_exit_blocks_tool(tmp_path):
     target = tmp_path / "a.txt"
     responses = [
@@ -117,7 +118,8 @@ def test_pre_hook_nonzero_exit_blocks_tool(tmp_path):
     assert "禁止写入" in agent.messages[2]["content"][0]["content"]
 
 
-@pytest.mark.skipif(os.name != "posix", reason="hooks require Linux sandbox")
+@pytest.mark.skipif(os.name != "posix" and os.environ.get("MINICODE_TEST_DOCKER") != "1",
+                    reason="hooks require an available sandbox")
 def test_post_hook_runs_with_env_vars(tmp_path):
     target = tmp_path / "a.txt"
     marker = tmp_path / "hook_ran.txt"
@@ -125,9 +127,10 @@ def test_post_hook_runs_with_env_vars(tmp_path):
         _tool_use("write_file", {"path": str(target), "content": "x"}),
         _final("完成"),
     ]
+    marker_for_hook = "/workspace/hook_ran.txt" if os.environ.get("MINICODE_TEST_DOCKER") == "1" else str(marker)
     agent = _agent_with_hooks(
         tmp_path,
-        {"post_tool": [{"tool": "write_file", "command": f'echo "$TOOL_NAME $TOOL_FILE" > {marker}'}]},
+        {"post_tool": [{"tool": "write_file", "command": f'echo "$TOOL_NAME $TOOL_FILE" > {marker_for_hook}'}]},
         responses,
     )
 
@@ -135,7 +138,8 @@ def test_post_hook_runs_with_env_vars(tmp_path):
 
     assert target.exists()
     assert "write_file" in marker.read_text()
-    assert str(target) in marker.read_text()
+    expected_path = "/workspace/a.txt" if os.environ.get("MINICODE_TEST_DOCKER") == "1" else str(target)
+    assert expected_path in marker.read_text()
 
 
 def test_hook_without_tool_filter_matches_all(tmp_path):

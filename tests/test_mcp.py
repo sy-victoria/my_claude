@@ -15,7 +15,7 @@ from minicode.mcp_client import HttpMcpServer, McpServer, load_mcp_tools, wrap_a
 @pytest.fixture(autouse=True)
 def transport_without_sandbox_on_windows(monkeypatch):
     """协议测试单独验证传输；Windows 沙箱暂未实现。"""
-    if os.name != "posix":
+    if os.name != "posix" and os.environ.get("MINICODE_TEST_DOCKER") != "1":
         monkeypatch.setattr("minicode.mcp_client.sandbox_argv", lambda argv, **_kwargs: (argv, os.environ.copy()))
 
 SERVER_PATH = str(Path(__file__).parent / "mini_mcp_server.py")

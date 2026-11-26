@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from minicode.tools.base import Tool
-from minicode.sandbox import sandbox_argv
+from minicode.sandbox import sandbox_argv, stop_sandbox
 
 PROTOCOL_VERSION = "2025-06-18"
 REQUEST_TIMEOUT_SECONDS = 15
@@ -47,6 +47,8 @@ class McpServer:
         self.name = name
         self._id = 0
         argv, env = sandbox_argv(command, writable_workspace=False)
+        self._sandbox_argv = argv
+        self._sandbox_env = env
         self._proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -126,6 +128,7 @@ class McpServer:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
                 self._proc.wait()
+        stop_sandbox(self._sandbox_argv, self._sandbox_env)
 
 
 class HttpMcpServer:

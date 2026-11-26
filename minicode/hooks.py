@@ -24,7 +24,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from minicode.sandbox import sandbox_command
+from minicode.sandbox import sandbox_command, stop_sandbox, uses_docker
 
 HOOK_TIMEOUT_SECONDS = 10
 
@@ -53,21 +53,27 @@ def run_hooks(
             continue
         env = os.environ.copy()
         env["TOOL_NAME"] = tool_name
-        env["TOOL_INPUT"] = json.dumps(tool_input, ensure_ascii=False)
-        env["TOOL_FILE"] = str(tool_input.get("path", ""))
+        hook_input = dict(tool_input)
+        hook_path = str(tool_input.get("path", ""))
+        if uses_docker() and cwd is not None and hook_path:
+            target = (cwd / hook_path).resolve()
+            if target.is_relative_to(cwd.resolve()):
+                hook_path = "/workspace/" + target.relative_to(cwd.resolve()).as_posix()
+                hook_input["path"] = hook_path
+        env["TOOL_INPUT"] = json.dumps(hook_input, ensure_ascii=False)
+        env["TOOL_FILE"] = hook_path
         try:
             # 只读工具的 hook 不能借由自动执行获得工作区写权限。
             writable = tool_name in {"bash", "edit_file", "write_file"} or tool_name.startswith("mcp__")
-            argv, sandbox_env = sandbox_command(hook["command"], cwd=cwd,
-                                                writable_workspace=writable)
-            marker = argv.index("--")
-            for key in ("TOOL_NAME", "TOOL_INPUT", "TOOL_FILE"):
-                argv[marker:marker] = ["--setenv", key, env[key]]
-                marker += 3
+            argv, sandbox_env = sandbox_command(
+                hook["command"], cwd=cwd, writable_workspace=writable,
+                extra_env={key: env[key] for key in ("TOOL_NAME", "TOOL_INPUT", "TOOL_FILE")},
+            )
             proc = subprocess.run(
                 argv,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=HOOK_TIMEOUT_SECONDS,
                 env=sandbox_env,
             )
@@ -76,6 +82,7 @@ def run_hooks(
                 return False, str(exc)
             continue
         except subprocess.TimeoutExpired:
+            stop_sandbox(argv, sandbox_env)
             if event == "pre_tool":
                 return False, f"pre_tool hook 超时（{HOOK_TIMEOUT_SECONDS}s）：{hook['command']}"
             continue
