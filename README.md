@@ -3,7 +3,7 @@
 ## 当前开发版的运行边界
 
 - 模型推理仍通过远程 API；本地 agent 本身可在 CPU 上运行。使用 `--base-url` 和 `--model` 可选择 Anthropic 兼容端点与模型，默认仍是 DeepSeek。
-- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。`.github/workflows/linux-sandbox.yml` 在 Ubuntu 24.04 上运行原生端到端测试；结果以 GitHub Actions 为准。
+- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。`.github/workflows/linux-sandbox.yml` 在 Ubuntu 22.04 上运行原生端到端测试；Ubuntu 24.04 GitHub runner 的 AppArmor 默认策略曾阻止 `bwrap` 创建网络命名空间，程序因此保持拒绝执行。结果以 GitHub Actions 为准。
 - Windows 和 macOS 使用本地 Docker 的 Linux 容器运行 shell、文件工具、hooks 和本地 MCP；需要 Docker Desktop 的 Linux 引擎和已缓存的 `python:3.11.11-slim-bookworm` 镜像（可用 `MINICODE_SANDBOX_IMAGE` 指定其他已缓存的 Python 镜像）。容器禁用网络、仅挂载工作区与只读程序包，并限制权限和资源。命令按 Linux `sh` 语法执行。Windows 路径已完成集成测试；macOS 路径尚待实机验收。
 - Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
