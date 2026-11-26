@@ -27,7 +27,9 @@ jobs:
       - name: Install package and run desktop integration tests
         env:
           MINICODE_TEST_DOCKER: '1'
+          TMPDIR: ${{ github.workspace }}/.pytest-tmp
         run: |
+          mkdir -p "$TMPDIR"
           python -m pip install -e . pytest
           python -m pytest -q
       - name: Stop local runtime
