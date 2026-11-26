@@ -8,7 +8,7 @@
 - Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
 - 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。用户可配置 `max_loops`（默认 40）、`api_timeout_seconds`（默认 90）、`max_turn_seconds`（默认 600）、`max_tool_calls`（默认 100），以及 `model` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置可收紧 `max_loops`，但不能指定其他运行上限、新增 `allow` 规则或指定会接收 API Key 的 `base_url`；该地址只能在用户设置或 CLI 参数中指定。API 失败发生在工具执行后时，会保留完整会话记录供恢复。
-- 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`，可用 `token_env` 指向 Bearer token 环境变量。尚未实现 OAuth 登录；工具清单请求失败时会尝试重新握手一次。
+- 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`，可用 `token_env` 指向 Bearer token 环境变量。尚未实现 OAuth 登录；工具清单请求失败时会尝试重新握手一次。远程会话过期时会重新握手，写工具不会自动重放，避免重复副作用。
 
 从零复现一个 Claude Code 风格的 coding agent，用于学习 agent 架构。
 

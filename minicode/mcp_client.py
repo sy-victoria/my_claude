@@ -28,6 +28,7 @@ import os
 import queue
 import subprocess
 import threading
+import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 from pathlib import Path
@@ -38,6 +39,10 @@ from minicode.sandbox import sandbox_argv, stop_sandbox
 
 PROTOCOL_VERSION = "2025-06-18"
 REQUEST_TIMEOUT_SECONDS = 15
+
+
+class McpSessionExpired(RuntimeError):
+    """服务端已终止当前 HTTP 会话；调用方需重新握手。"""
 
 
 class McpServer:
@@ -161,7 +166,16 @@ class HttpMcpServer:
                 raise ValueError(f"缺少 MCP 认证环境变量 {self.token_env}")
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(self.url, json.dumps(body).encode(), headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        try:
+            response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 and self.session_id:
+                self.session_id = None
+                raise McpSessionExpired(f"MCP server {self.name} 会话已过期") from exc
+            if exc.code == 401:
+                raise PermissionError(f"MCP server {self.name} 认证失败；请检查 token_env") from exc
+            raise
+        with response:
             self.session_id = response.headers.get("Mcp-Session-Id", self.session_id)
             if notify:
                 return {}
@@ -200,14 +214,19 @@ class HttpMcpServer:
     def list_tools(self) -> list[dict[str, Any]]:
         try:
             return self._send("tools/list").get("tools", [])
-        except (OSError, ValueError):
+        except (OSError, ValueError, McpSessionExpired):
             # 发现工具是只读操作，连接中断后可以安全地重新握手并重试一次。
             self.session_id = None
             self.initialize()
             return self._send("tools/list").get("tools", [])
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        result = self._send("tools/call", {"name": tool_name, "arguments": arguments})
+        try:
+            result = self._send("tools/call", {"name": tool_name, "arguments": arguments})
+        except McpSessionExpired:
+            # 工具可能已有副作用，不自动重放；恢复连接供后续请求使用。
+            self.initialize()
+            return "MCP 会话已过期，连接已恢复；本次工具调用结果未知，请先检查状态再决定是否重试"
         text = "\n".join(c.get("text", "") for c in result.get("content", []) if c.get("type") == "text")
         return f"MCP 工具执行出错：{text}" if result.get("isError") else text or "（无文本输出）"
 

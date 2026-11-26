@@ -62,6 +62,51 @@ def test_http_mcp_json_transport():
         thread.join(timeout=2)
 
 
+def test_http_mcp_expired_session_recovers_without_replaying_tool_call():
+    calls = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            method = payload["method"]
+            calls.append((method, self.headers.get("Mcp-Session-Id")))
+            if method == "tools/call" and self.headers.get("Mcp-Session-Id") == "old":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if "id" not in payload:
+                self.send_response(202)
+                self.end_headers()
+                return
+            body = json.dumps({"jsonrpc": "2.0", "id": payload["id"],
+                               "result": {"content": [{"type": "text", "text": "ok"}]}}).encode()
+            self.send_response(200)
+            if method == "initialize":
+                self.send_header("Mcp-Session-Id", "new")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = HttpMcpServer("local", f"http://127.0.0.1:{server.server_port}")
+        client.session_id = "old"
+        assert "结果未知" in client.call_tool("write", {})
+        assert client.session_id == "new"
+        assert client.call_tool("read", {}) == "ok"
+        assert calls == [("tools/call", "old"), ("initialize", None),
+                         ("notifications/initialized", "new"), ("tools/call", "new")]
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
 @pytest.fixture
 def server():
     s = McpServer("calc", [sys.executable, SERVER_PATH])
