@@ -74,10 +74,10 @@ def sandbox_argv(argv: list[str], cwd: Path | None = None,
     if any(workspace.is_relative_to(Path(directory)) for directory in ("/home", "/root", "/tmp")):
         args += ["--dir", str(workspace.parent)]
     args += ["--bind" if writable_workspace else "--ro-bind", str(workspace), str(workspace),
-             "--dir", "/opt/minicode", "--ro-bind", str(Path(__file__).resolve().parent.parent), "/opt/minicode",
+             "--dir", "/tmp/minicode", "--ro-bind", str(Path(__file__).resolve().parent.parent), "/tmp/minicode",
              "--chdir", str(workspace),
              "--clearenv", "--setenv", "PATH", path_env,
-             "--setenv", "HOME", "/tmp", "--setenv", "PYTHONPATH", "/opt/minicode"]
+             "--setenv", "HOME", "/tmp", "--setenv", "PYTHONPATH", "/tmp/minicode"]
     for key, value in (extra_env or {}).items():
         args += ["--setenv", key, value]
     args += ["--", *argv]
