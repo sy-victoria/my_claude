@@ -6,7 +6,7 @@
 - Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。此实现尚未完成 Linux 实机验收。
 - Windows/macOS 尚无系统级执行沙箱；这些平台上的 shell、hooks 和本地 MCP 会拒绝运行。Windows 文件工具仍通过路径权限检查执行。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
-- 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。可配置 `base_url`、`model`、`max_loops` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置不能新增 `allow` 规则。
+- 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。可配置 `model`、`max_loops` 和 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置不能新增 `allow` 规则，也不能指定会接收 API Key 的 `base_url`；该地址只能在用户设置或 CLI 参数中指定。
 - 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`，可用 `token_env` 指向 Bearer token 环境变量。尚未实现 OAuth 登录；工具清单请求失败时会尝试重新握手一次。
 
 从零复现一个 Claude Code 风格的 coding agent，用于学习 agent 架构。

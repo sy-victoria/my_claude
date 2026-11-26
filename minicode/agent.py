@@ -111,11 +111,11 @@ class Agent:
         self.plan_mode = False
         self._full_tools = self.tools  # plan mode 退出时恢复用
         # 用户配置的工具前后钩子（M9c），启动时加载一次
-        self.hooks = load_hooks()
+        self.hooks = load_hooks(self.permissions.cwd)
         # system prompt 在会话开始时组装一次（含 cwd/日期/项目记忆），之后
         # 每次请求都通过 system 参数携带——它不进 messages，所以永远不会
         # 被当成对话历史，也不会被未来的 compaction（M6）压缩掉。
-        self.system_prompt = build_system_prompt()
+        self.system_prompt = build_system_prompt(self.permissions.cwd)
         # 已读文件集合：edit_file 修改已存在的文件前，必须先 read_file 过它
         # （M1 验收时发现模型"自发"先读，但不能依赖模型的好习惯——这是
         # Claude Code 的真实硬约束，防止模型凭想象改文件）。
@@ -285,7 +285,8 @@ class Agent:
             return deny_reason
 
         # pre_tool hook（M9c）：用户配置的前置校验，非零退出阻止执行。
-        hook_ok, hook_reason = run_hooks(self.hooks, "pre_tool", name, tool_input)
+        hook_ok, hook_reason = run_hooks(self.hooks, "pre_tool", name, tool_input,
+                                         cwd=self.permissions.cwd)
         if not hook_ok:
             return f"操作被 pre_tool hook 阻止：{hook_reason}"
 
@@ -308,7 +309,7 @@ class Agent:
                 result = tool.run(tool_input)
             if name == "read_file" and not result.startswith("错误"):
                 self._read_files.add(Path(tool_input.get("path", "")).resolve())
-            run_hooks(self.hooks, "post_tool", name, tool_input)
+            run_hooks(self.hooks, "post_tool", name, tool_input, cwd=self.permissions.cwd)
             return result
         except Exception as exc:
             # 工具报错不能让整个 agent 崩溃：把错误信息当成一条 tool_result

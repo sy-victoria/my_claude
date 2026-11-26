@@ -133,5 +133,16 @@ def test_hook_without_tool_filter_matches_all(tmp_path):
     ok, reason = hooks_mod.run_hooks(
         {"pre_tool": [{"command": "exit 1"}]}, "pre_tool", "anything", {}
     )
-
     assert not ok
+
+
+def test_read_tool_hook_gets_readonly_sandbox(monkeypatch):
+    selected = []
+    monkeypatch.setattr(hooks_mod, "sandbox_command",
+                        lambda command, **kwargs: (selected.append(kwargs["writable_workspace"]) or
+                                                   (["sandbox", "--", "true"], {})))
+    monkeypatch.setattr(hooks_mod.subprocess, "run",
+                        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    ok, _ = hooks_mod.run_hooks({"pre_tool": [{"command": "true"}]},
+                                 "pre_tool", "read_file", {"path": "a.txt"})
+    assert ok and selected == [False]

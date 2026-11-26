@@ -35,5 +35,6 @@ def sandbox_argv(argv: list[str], cwd: Path | None = None,
     return args, {"PATH": path_env}
 
 
-def sandbox_command(command: str, cwd: Path | None = None) -> tuple[list[str], dict[str, str]]:
-    return sandbox_argv(["/bin/sh", "-c", command], cwd)
+def sandbox_command(command: str, cwd: Path | None = None,
+                    writable_workspace: bool = True) -> tuple[list[str], dict[str, str]]:
+    return sandbox_argv(["/bin/sh", "-c", command], cwd, writable_workspace)

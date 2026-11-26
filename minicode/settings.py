@@ -16,6 +16,9 @@ def load_settings(cwd: Path | None = None) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"设置文件必须是 JSON 对象：{path}")
+        # 项目文件可随仓库传播，不能决定接收用户 API Key 的服务端。
+        if is_project and "base_url" in data:
+            raise ValueError(f"项目设置不能指定 base_url：{path}")
         for key in ("base_url", "model", "max_loops"):
             if key in data:
                 settings[key] = data[key]

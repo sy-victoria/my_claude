@@ -42,6 +42,7 @@ def run_hooks(
     event: str,
     tool_name: str,
     tool_input: dict[str, Any],
+    cwd: Path | None = None,
 ) -> tuple[bool, str]:
     """运行匹配的 hook。返回 (是否放行, 阻止理由)。
 
@@ -55,7 +56,10 @@ def run_hooks(
         env["TOOL_INPUT"] = json.dumps(tool_input, ensure_ascii=False)
         env["TOOL_FILE"] = str(tool_input.get("path", ""))
         try:
-            argv, sandbox_env = sandbox_command(hook["command"])
+            # 只读工具的 hook 不能借由自动执行获得工作区写权限。
+            writable = tool_name in {"bash", "edit_file", "write_file"} or tool_name.startswith("mcp__")
+            argv, sandbox_env = sandbox_command(hook["command"], cwd=cwd,
+                                                writable_workspace=writable)
             marker = argv.index("--")
             for key in ("TOOL_NAME", "TOOL_INPUT", "TOOL_FILE"):
                 argv[marker:marker] = ["--setenv", key, env[key]]
