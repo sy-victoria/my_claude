@@ -3,8 +3,8 @@
 ## 当前开发版的运行边界
 
 - 默认模型推理通过远程 DeepSeek API；本地 agent 本身可在 CPU 上运行。`--provider anthropic` 使用 Anthropic 协议兼容端点，`--provider openai` 使用 OpenAI Chat Completions 兼容端点，`--provider ollama --model <已安装模型>` 连接本机 Ollama (`http://127.0.0.1:11434/v1`)，可在 CPU 上完成模型推理；实际速度和内存需求由所选模型决定。OpenAI/Ollama 后端必须明确指定模型名，OpenAI 使用 `OPENAI_API_KEY`，Ollama 本机服务无需 API Key。
-- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。`.github/workflows/linux-sandbox.yml` 已在 Ubuntu 22.04 完成原生端到端验收（136 通过、8 个条件跳过，[运行记录](https://github.com/sy-victoria/my_claude/actions/runs/45799147985)）。Ubuntu 24.04 GitHub runner 的 AppArmor 默认策略曾阻止 `bwrap` 创建网络命名空间，程序因此保持拒绝执行。
-- Windows 和 macOS 使用本地 Docker 的 Linux 容器运行 shell、文件工具、hooks 和本地 MCP；需要 Docker Desktop 或兼容的本地 Docker 引擎、已共享给 Docker 的项目目录，以及已缓存的 `python:3.11.11-slim-bookworm` 镜像（可用 `MINICODE_SANDBOX_IMAGE` 指定其他已缓存的 Python 镜像）。容器禁用网络、仅挂载工作区与只读程序包，并限制权限和资源。命令按 Linux `sh` 语法执行。Windows 路径已完成集成测试；macOS Intel runner + Colima 已完成实机验收（141 通过、3 个条件跳过，[运行记录](https://github.com/sy-victoria/my_claude/actions/runs/45799147848)）。
+- Linux 上的 shell、文件工具、hooks 和本地 MCP 进程需要安装 `bubblewrap`，且内核必须允许创建用户命名空间；缺少任一条件时拒绝执行。沙箱限制网络并将工作目录作为可写区域。`.github/workflows/linux-sandbox.yml` 已在 Ubuntu 22.04 完成原生端到端验收（139 通过、8 个条件跳过，[运行记录](https://github.com/sy-victoria/my_claude/actions/runs/45800505848)）。Ubuntu 24.04 GitHub runner 的 AppArmor 默认策略曾阻止 `bwrap` 创建网络命名空间，程序因此保持拒绝执行。
+- Windows 和 macOS 使用本地 Docker 的 Linux 容器运行 shell、文件工具、hooks 和本地 MCP；需要 Docker Desktop 或兼容的本地 Docker 引擎、已共享给 Docker 的项目目录，以及已缓存的 `python:3.11.11-slim-bookworm` 镜像（可用 `MINICODE_SANDBOX_IMAGE` 指定其他已缓存的 Python 镜像）。容器禁用网络、仅挂载工作区与只读程序包，并限制权限和资源。命令按 Linux `sh` 语法执行。Windows 路径已完成集成测试；macOS Intel runner + Colima 已完成实机验收（144 通过、3 个条件跳过，[运行记录](https://github.com/sy-victoria/my_claude/actions/runs/45800505901)）。
 - Windows Docker 集成测试可通过设置 `MINICODE_TEST_DOCKER=1` 后运行 `pytest tests/test_docker_integration.py tests/test_bash.py tests/test_mcp.py`；默认单元测试不启动 Docker。
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
 - 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。用户可配置 `provider`、`base_url`、`model`、`max_loops`（默认 40）、`api_timeout_seconds`（默认 90）、`max_turn_seconds`（默认 600）、`max_tool_calls`（默认 100），以及 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置可收紧 `max_loops`，但不能指定 provider、其他运行上限、新增 `allow` 规则或指定会接收 API Key 的 `base_url`；后端和地址只能在用户设置或 CLI 参数中指定。API 失败发生在工具执行后时，会保留完整会话记录供恢复。
@@ -76,7 +76,7 @@ uv run minicode
 
 ## 当前状态
 
-原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库已实现权限规则、系统沙箱、运行上限、分层配置和项目记忆、多后端、远程 MCP 认证及恢复、可授权子 agent、非交互接口，并完成 Linux、Windows 和 macOS 的沙箱验收。Windows 本机单元测试为 130 通过、17 个条件跳过；当前已推送版本的 [Linux 原生验收](https://github.com/sy-victoria/my_claude/actions/runs/45799147985) 为 136 通过、8 个条件跳过，macOS Docker 验收见上方运行记录。真实 Ollama 模型的 CPU 性能仍需按目标机器和模型实测。
+原项目的教学里程碑（M0~M9 含 6 个 M9 扩展）已完成；本仓库已实现权限规则、系统沙箱、运行上限、分层配置和项目记忆、多后端、远程 MCP 认证及恢复、可授权子 agent、非交互接口，并完成 Linux、Windows 和 macOS 的沙箱验收。Windows 本机单元测试为 130 通过、17 个条件跳过；代码提交 `b6451f1` 的 [Linux 原生验收](https://github.com/sy-victoria/my_claude/actions/runs/45800505848) 为 139 通过、8 个条件跳过，macOS Docker 验收见上方运行记录。真实 Ollama 模型的 CPU 性能仍需按目标机器和模型实测。
 
 已实现的能力：agent 循环、10 个工具（文件/搜索/bash/子agent/skill/todo）、三档权限系统、系统提示词与 AGENT.md 项目记忆、上下文自动压缩、流式终端（DeepSeek 蓝色主题 + 🐳 吉祥物、交互式菜单、`/resume` 会话恢复、`⏺`/`⎿` 工具调用日志 + 彩色 diff）、skill 系统（渐进式披露）、plan mode、手写 MCP 客户端、goal 无人值守模式、hooks。
 
