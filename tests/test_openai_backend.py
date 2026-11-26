@@ -88,3 +88,30 @@ def test_openai_endpoint_sends_bearer_to_configured_https_host(monkeypatch):
     assert seen["authorization"] == "Bearer secret"
     assert seen["timeout"] == 2
     assert seen["payload"]["messages"][0] == {"role": "system", "content": "hello"}
+
+
+def test_openai_stream_assembles_text_and_tool_calls(monkeypatch):
+    events = [
+        {"choices": [{"delta": {"content": "你好"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1",
+             "function": {"name": "read_file", "arguments": '{"path":'}}]}, "finish_reason": None}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0,
+             "function": {"arguments": '"a.py"}'}}]}, "finish_reason": "tool_calls"}]},
+        {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 4}},
+    ]
+
+    class Opener:
+        def open(self, request, timeout):
+            assert json.loads(request.data)["stream"] is True
+            return io.BytesIO(b"".join(b"data: " + json.dumps(item).encode() + b"\n\n"
+                                       for item in events) + b"data: [DONE]\n\n")
+
+    monkeypatch.setattr("minicode.openai_backend.urllib.request.build_opener", lambda *_args: Opener())
+    adapter = OpenAIChatAdapter("http://127.0.0.1:11434/v1", None)
+    with adapter.stream(model="local", max_tokens=20, system="rules",
+                        messages=[{"role": "user", "content": "go"}]) as stream:
+        assert list(stream.text_stream) == ["你好"]
+        result = stream.get_final_message()
+    assert result.stop_reason == "tool_use"
+    assert result.content[1].input == {"path": "a.py"}
+    assert result.usage.input_tokens == 7

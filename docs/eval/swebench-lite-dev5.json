@@ -1,0 +1,12 @@
+{
+  "dataset": "princeton-nlp/SWE-bench_Lite",
+  "revision": "6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2",
+  "split": "dev",
+  "instance_ids": [
+    "sqlfluff__sqlfluff-1625",
+    "sqlfluff__sqlfluff-2419",
+    "sqlfluff__sqlfluff-1733",
+    "sqlfluff__sqlfluff-1517",
+    "sqlfluff__sqlfluff-1763"
+  ]
+}

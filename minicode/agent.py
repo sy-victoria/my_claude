@@ -25,14 +25,17 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import anthropic
 
 from minicode.config import BASE_URL, MAX_TOKENS, resolve_model
-from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary, split_for_compaction
+from minicode.context import SUMMARY_INSTRUCTION, ContextTracker, merge_summary, split_for_compaction, trim_tool_result
 from minicode.hooks import load_hooks, run_hooks
+from minicode.harness import TaskJournal
 from minicode.openai_backend import OLLAMA_BASE_URL, OPENAI_BASE_URL, OpenAIChatAdapter
 from minicode.permissions import PermissionManager
 from minicode.prompts import build_system_prompt
@@ -44,6 +47,16 @@ from minicode.tools.base import Tool
 ToolCallHook = Callable[[str, dict[str, Any]], None]
 # 流式文本回调：每收到一段文本增量调用一次，CLI 用它边生成边渲染。
 TextHook = Callable[[str], None]
+PARALLEL_READ_TOOLS = frozenset({"read_file", "list_files", "glob", "grep"})
+MAX_READ_WORKERS = 4
+
+
+def _accesses_conflict(left: tuple[Path, bool], right: tuple[Path, bool]) -> bool:
+    """A directory read and a write beneath it must never overlap."""
+    first, first_writes = left
+    second, second_writes = right
+    return (first_writes or second_writes) and (
+        first == second or first.is_relative_to(second) or second.is_relative_to(first))
 
 
 def _block_to_dict(block: Any) -> dict[str, Any]:
@@ -85,6 +98,8 @@ class Agent:
         api_timeout_seconds: float = 90,
         max_turn_seconds: float = 600,
         max_tool_calls: int = 100,
+        journal: TaskJournal | None = None,
+        checkpoint_messages: bool = True,
     ) -> None:
         if api_timeout_seconds <= 0 or max_turn_seconds <= 0 or max_tool_calls < 1:
             raise ValueError("请求超时、单轮时限和工具调用上限必须为正数")
@@ -131,6 +146,10 @@ class Agent:
         self.api_timeout_seconds = api_timeout_seconds
         self.max_turn_seconds = max_turn_seconds
         self.max_tool_calls = max_tool_calls
+        self.journal = journal
+        self.checkpoint_messages = checkpoint_messages
+        self._journal_scope = "main" if checkpoint_messages else "sub-" + uuid.uuid4().hex
+        self._active_call_id: str | None = None
         self.plan_mode = False
         self._full_tools = self.tools  # plan mode 退出时恢复用
         # 用户配置的工具前后钩子（M9c），启动时加载一次
@@ -148,7 +167,8 @@ class Agent:
         # compaction 发生时的通知回调（CLI 用它提示用户），(压缩前消息数, 压缩后消息数)
         self.on_compact: Callable[[int, int], None] | None = None
 
-    def run_turn(self, user_input: str, on_text: TextHook | None = None) -> str:
+    def run_turn(self, user_input: str, on_text: TextHook | None = None,
+                 resume_pending: bool = False) -> str:
         """处理一轮用户输入，驱动循环直到模型给出最终文本回复。
 
         返回模型最后一次回复里的纯文本，供 CLI 打印。中间发生的所有工具
@@ -161,9 +181,19 @@ class Agent:
         self.last_stop_reason = None
         if self.context.should_compact():
             self.compact()
+        # Project instructions may change during a long session; refresh at a safe turn boundary.
+        self.system_prompt = build_system_prompt(self.permissions.cwd)
+        if self.plan_mode:
+            self.system_prompt += self.PLAN_MODE_PROMPT
 
         turn_start = len(self.messages)
-        self.messages.append({"role": "user", "content": user_input})
+        if not resume_pending:
+            self.messages.append({"role": "user", "content": user_input})
+        elif not self.messages or self.messages[-1]["role"] != "user":
+            raise ValueError("没有可继续的模型请求")
+        if self.journal and self.checkpoint_messages:
+            self.journal.set_status("active")
+            self.journal.checkpoint(self.messages, "turn_begin")
 
         loops = 0
         tool_calls = 0
@@ -181,7 +211,7 @@ class Agent:
                 if time.monotonic() >= deadline:
                     return self._stop_incomplete("time_limit", f"单轮运行超过 {self.max_turn_seconds} 秒")
                 # 已运行的工具可能有副作用；保留完整工具记录，方便恢复会话。
-                if len(self.messages) > turn_start + 1:
+                if resume_pending or len(self.messages) > turn_start + 1:
                     return self._stop_incomplete("api_error", f"API 请求失败：{exc}")
                 del self.messages[turn_start:]
                 raise
@@ -189,24 +219,23 @@ class Agent:
             self.messages.append(
                 {"role": "assistant", "content": [_block_to_dict(b) for b in response.content]}
             )
+            if self.journal and self.checkpoint_messages:
+                self.journal.checkpoint(self.messages, "model_response")
 
             if response.stop_reason != "tool_use":
                 self.last_stop_reason = response.stop_reason
+                if self.journal and self.checkpoint_messages:
+                    self.journal.set_status("complete" if response.stop_reason in
+                                            ("end_turn", "stop_sequence") else "incomplete")
                 return self._extract_text(response.content)
 
-            tool_results = []
-            reached_limit = False
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
-                if tool_calls >= self.max_tool_calls or time.monotonic() >= deadline:
-                    reached_limit = True
-                    tool_results.append({"type": "tool_result", "tool_use_id": block.id,
-                                         "content": "本轮工具调用或运行时间已达上限"})
-                    continue
-                tool_results.append(self._run_tool_use_block(block))
-                tool_calls += 1
+            tool_results, executed, reached_limit = self._dispatch_tool_blocks(
+                [block for block in response.content if block.type == "tool_use"],
+                self.max_tool_calls - tool_calls, deadline)
+            tool_calls += executed
             self.messages.append({"role": "user", "content": tool_results})
+            if self.journal and self.checkpoint_messages:
+                self.journal.checkpoint(self.messages, "tool_results")
             if reached_limit:
                 reason = "time_limit" if time.monotonic() >= deadline else "tool_limit"
                 return self._stop_incomplete(reason, "本轮工具调用或运行时间已达上限")
@@ -215,6 +244,9 @@ class Agent:
         self.last_stop_reason = reason
         message = f"[{description}，任务提前结束]"
         self.messages.append({"role": "assistant", "content": [{"type": "text", "text": message}]})
+        if self.journal and self.checkpoint_messages:
+            self.journal.checkpoint(self.messages, "incomplete")
+            self.journal.set_status("incomplete")
         return message
 
     def _request(self, on_text: TextHook | None, timeout: float | None = None) -> Any:
@@ -289,12 +321,83 @@ class Agent:
         return True
 
     def _run_tool_use_block(self, block: Any) -> dict[str, Any]:
-        result_text = self._execute_tool(block.name, block.input)
+        call_id = f"{self._journal_scope}:{block.id}"
+        previous = self.journal.begin_tool(call_id, block.name, block.input) if self.journal else None
+        if previous is not None:
+            result_text = previous
+        else:
+            self._active_call_id = call_id
+            try:
+                result_text = self._execute_tool(block.name, block.input)
+            finally:
+                self._active_call_id = None
+            if self.journal:
+                self.journal.finish_tool(call_id, result_text)
         return {
             "type": "tool_result",
             "tool_use_id": block.id,
-            "content": result_text,
+            "content": trim_tool_result(result_text, self.context.last_input_tokens),
         }
+
+    def _dispatch_tool_blocks(self, blocks: list[Any], remaining: int,
+                              deadline: float) -> tuple[list[dict[str, Any]], int, bool]:
+        """Run consecutive built-in file reads together, preserving model result order."""
+        results: list[dict[str, Any]] = []
+        executed = 0
+        limited = False
+        index = 0
+        while index < len(blocks):
+            block = blocks[index]
+            if executed >= remaining or time.monotonic() >= deadline:
+                limited = True
+                results.append({"type": "tool_result", "tool_use_id": block.id,
+                                "content": "本轮工具调用或运行时间已达上限"})
+                index += 1
+                continue
+            if block.name not in PARALLEL_READ_TOOLS:
+                results.append(self._run_tool_use_block(block))
+                executed += 1
+                index += 1
+                continue
+            batch = []
+            while (index < len(blocks) and blocks[index].name in PARALLEL_READ_TOOLS
+                   and len(batch) < MAX_READ_WORKERS and executed + len(batch) < remaining
+                   and all(not _accesses_conflict(
+                       ((self.permissions.cwd / previous.input.get("path", ".")).resolve(), False),
+                       ((self.permissions.cwd / blocks[index].input.get("path", ".")).resolve(), False))
+                       for previous in batch)):
+                batch.append(blocks[index])
+                index += 1
+            # Approval runs on the main thread before workers start. The callbacks
+            # remain ordered even if the independent reads finish out of order.
+            approved = []
+            for item in batch:
+                call_id = f"{self._journal_scope}:{item.id}"
+                previous = self.journal.begin_tool(call_id, item.name, item.input) if self.journal else None
+                if previous is not None:
+                    approved.append((item, None, previous, True, call_id))
+                    continue
+                if self.on_tool_call:
+                    self.on_tool_call(item.name, item.input)
+                tool = self._tools_by_name.get(item.name)
+                if tool is None:
+                    approved.append((item, None, f"错误：未知工具 {item.name}", False, call_id))
+                    continue
+                allowed, reason = self.permissions.check(tool, item.input)
+                approved.append((item, tool if allowed else None, reason, False, call_id))
+            with ThreadPoolExecutor(max_workers=MAX_READ_WORKERS) as pool:
+                futures = [pool.submit(self._run_tool, item.name, item.input, True) if tool else None
+                           for item, tool, _reason, _prior, _call_id in approved]
+                for (item, _tool, reason, prior, call_id), future in zip(approved, futures):
+                    value = future.result() if future else reason
+                    if self.journal and not prior:
+                        self.journal.finish_tool(call_id, value)
+                    if self.on_tool_result:
+                        self.on_tool_result(item.name, item.input, value)
+                    results.append({"type": "tool_result", "tool_use_id": item.id,
+                                    "content": trim_tool_result(value, self.context.last_input_tokens)})
+                    executed += 1
+        return results, executed, limited
 
     def _execute_tool(self, name: str, tool_input: dict[str, Any]) -> str:
         if self.on_tool_call:
@@ -306,7 +409,7 @@ class Agent:
             self.on_tool_result(name, tool_input, result_text)
         return result_text
 
-    def _run_tool(self, name: str, tool_input: dict[str, Any]) -> str:
+    def _run_tool(self, name: str, tool_input: dict[str, Any], approved: bool = False) -> str:
         """真正跑一次工具调用，返回结果文本（成功/拒绝/报错都在这里产生）。
 
         单独拆出来是为了让 _execute_tool 只有一个返回结果的出口——这样
@@ -331,9 +434,10 @@ class Agent:
                 )
 
         # 所有工具执行前统一过权限守门人——工具自己不做权限判断。
-        allowed, deny_reason = self.permissions.check(tool, tool_input)
-        if not allowed:
-            return deny_reason
+        if not approved:
+            allowed, deny_reason = self.permissions.check(tool, tool_input)
+            if not allowed:
+                return deny_reason
 
         # pre_tool hook（M9c）：用户配置的前置校验，非零退出阻止执行。
         hook_ok, hook_reason = run_hooks(self.hooks, "pre_tool", name, tool_input,
@@ -350,6 +454,9 @@ class Agent:
                 finally:
                     current_parent.reset(token)
             elif name in {"read_file", "list_files", "glob", "grep", "edit_file", "write_file"}:
+                if (self.journal and self._active_call_id and name in {"edit_file", "write_file"}):
+                    target = (self.permissions.cwd / tool_input["path"]).resolve()
+                    self.journal.before_write(self._active_call_id, target)
                 result = self._run_file_tool(name, tool_input)
             elif name == "bash":
                 from minicode.tools.bash import current_workspace

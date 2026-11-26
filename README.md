@@ -9,6 +9,8 @@
 - `-p "任务" --output-format json` 可运行单轮并返回 JSON；`stream-json` 输出逐行事件。结果包含 `status=complete|incomplete`；达到循环、时间、工具调用或模型输出上限时以非零退出码报告未完成。`--resume` 恢复最近会话，`--session-id ID` 恢复指定会话。非交互运行中需要确认的工具会被拒绝。
 - 用户设置为 `~/.minicode/settings.json`，项目设置为 `.minicode/settings.json`。用户可配置 `provider`、`base_url`、`model`、`max_loops`（默认 40）、`api_timeout_seconds`（默认 90）、`max_turn_seconds`（默认 600）、`max_tool_calls`（默认 100），以及 `permissions` 的 `allow`、`ask`、`deny` 规则；例如 `bash:git status`。`bash` 的 allow 规则只接受完整命令精确匹配。项目设置可收紧 `max_loops`，但不能指定 provider、其他运行上限、新增 `allow` 规则或指定会接收 API Key 的 `base_url`；后端和地址只能在用户设置或 CLI 参数中指定。API 失败发生在工具执行后时，会保留完整会话记录供恢复。
 - 项目记忆按目录层级读取从父目录到当前目录的 `CLAUDE.md` 和 `AGENT.md`，拼入每次请求的 system prompt；越接近当前工作区的说明越靠后。记忆文件不授予额外工具权限。
+- 工具结果进入模型历史前统一裁剪；项目记忆在每轮开始时重新读取。内置只读文件工具最多 4 个并发执行，结果按模型调用顺序回传；写入、shell、MCP 和子 Agent 作为执行屏障。OpenAI/Ollama 后端支持文本增量事件。
+- `--goal` 自动建立任务检查点；`-p "任务" --checkpoint` 显式建立检查点，JSON 结果包含 `task_id`。用 `--task-id ID -p "继续"` 恢复；用 `--abort-task ID` 放弃任务并回滚仍与 Agent 写入结果一致的文件。状态不明的调用不自动重放；shell、Hooks 和 MCP 的副作用不会自动回滚。快照位于 `~/.minicode/tasks/`。
 - 项目级 `.minicode/mcp.json` 可配置本地 MCP 的 `command`；其沙箱工作目录只读，防止服务启动时直接修改项目。远程 HTTP MCP 必须配置在用户级 `~/.minicode/mcp.json`，使用 `url`。可配置 `token_env` 使用已有 Bearer token，也可配置 `"oauth": {}` 使用浏览器授权；如果服务不支持动态客户端注册，可在 `oauth.client_id` 中提供已注册的公共客户端 ID，`oauth.scope` 可指定所需范围。OAuth 使用 PKCE、受保护资源和授权服务器元数据，令牌只保存在当前进程内存中；非交互运行不能启动浏览器，需使用 `token_env`。工具清单请求失败时会尝试重新握手一次。远程会话过期时会重新握手，写工具不会自动重放，避免重复副作用。
 
 用户级远程 MCP 配置示例：
@@ -61,6 +63,7 @@ echo 'export ANTHROPIC_API_KEY=sk-xxx' >> ~/.zshrc && source ~/.zshrc
 | [docs/03-testing-guide.md](docs/03-testing-guide.md) | 个人测试指南：怎么亲手试玩每个里程碑 | 想动手的人 |
 | [docs/04-terminal-ux.md](docs/04-terminal-ux.md) | 终端 UI / slash 命令怎么做的（M9 之后的打磨） | 学习者 |
 | [docs/devlog/](docs/devlog/) | 每个里程碑的开发日志（含"跟着学"指引） | 学习者 |
+| [docs/eval/README.md](docs/eval/README.md) | SWE-bench Lite 小样本、故障注入和对照评测 | 评测人员 |
 
 ## 本地开发（要改代码用这个）
 

@@ -29,6 +29,7 @@ from rich.spinner import Spinner
 from rich.theme import Theme
 
 from minicode import session, skills
+from minicode.harness import TaskJournal
 from minicode.agent import Agent
 from minicode.config import CONTEXT_WINDOW_TOKENS, DEFAULT_TIER, TIER_MODELS, resolve_model
 from minicode.permissions import MODES, PermissionManager
@@ -388,9 +389,20 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true", help="恢复最近一次会话")
     parser.add_argument("--session-id", help="恢复指定会话 ID（用于 -p）")
     parser.add_argument("--goal", help="goal 模式：给定目标自主执行到完成（建议配合 --mode accept-edits）")
+    parser.add_argument("--checkpoint", action="store_true", help="为本次任务保存可恢复的检查点")
+    parser.add_argument("--task-id", help="从指定任务检查点恢复")
+    parser.add_argument("--abort-task", help="放弃指定任务并回滚 Agent 文件工具改动")
     parser.add_argument("-p", "--print", dest="prompt", help="非交互运行一轮")
     parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text")
     args = parser.parse_args()
+    if args.abort_task:
+        journal = TaskJournal.load(args.abort_task, Path.cwd())
+        conflicts = journal.rollback()
+        print(json.dumps({"task_id": args.abort_task, "status": journal.data["status"],
+                          "conflicts": conflicts}, ensure_ascii=False))
+        return
+    if args.task_id and args.resume:
+        parser.error("--task-id 与 --resume 不能同时使用")
     if args.prompt is not None and args.output_format != "text" and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
@@ -488,6 +500,10 @@ def main() -> None:
     def emit_event(kind: str, **payload: object) -> None:
         print(json.dumps({"type": kind, **payload}, ensure_ascii=False), flush=True)
 
+    journal = (TaskJournal.load(args.task_id, Path.cwd()) if args.task_id else
+               TaskJournal.create(Path.cwd()) if args.checkpoint or args.goal else None)
+    if journal and args.prompt is None:
+        console.print(f"[dim]任务检查点：{journal.task_id}[/dim]")
     try:
         agent = Agent(
             api_key=api_key,
@@ -499,6 +515,7 @@ def main() -> None:
             api_timeout_seconds=settings["api_timeout_seconds"],
             max_turn_seconds=settings["max_turn_seconds"],
             max_tool_calls=max_tool_calls,
+            journal=journal,
             on_tool_call=(lambda name, inp: emit_event("tool_call", name=name, input=inp))
             if args.output_format == "stream-json" and args.prompt is not None else
             (None if args.prompt else _print_tool_call),
@@ -518,29 +535,39 @@ def main() -> None:
 
     if args.prompt is not None:
         try:
-            if args.session_id:
+            if journal and args.task_id:
+                agent.messages = journal.recover_messages()
+            elif args.session_id:
                 target = (session.SESSION_DIR / f"{args.session_id}.json").resolve()
                 if target.parent != session.SESSION_DIR.resolve():
                     raise ValueError("无效会话 ID")
                 agent.messages = session.load(target)
             elif args.resume:
                 agent.messages = session.load_latest() or []
-            reply = agent.run_turn(args.prompt, on_text=(lambda chunk: emit_event("text_delta", text=chunk))
-                                   if args.output_format == "stream-json" else None)
+            pending = bool(journal and args.task_id and agent.messages and
+                           agent.messages[-1]["role"] == "user")
+            text_hook = ((lambda chunk: emit_event("text_delta", text=chunk))
+                         if args.output_format == "stream-json" else None)
+            reply = (agent.run_turn(args.prompt, on_text=text_hook, resume_pending=True)
+                     if pending else agent.run_turn(args.prompt, on_text=text_hook))
             session_path = session.new_session_path()
             session.save(session_path, agent.messages)
             status = "complete" if agent.last_stop_reason in ("end_turn", "stop_sequence") else "incomplete"
             if args.output_format == "json":
                 print(json.dumps({"status": status, "result": reply, "session_id": session_path.stem,
-                                  "usage_tokens": agent.context.cumulative_tokens}, ensure_ascii=False))
+                                  "usage_tokens": agent.context.cumulative_tokens,
+                                  "task_id": journal.task_id if journal else None}, ensure_ascii=False))
             elif args.output_format == "stream-json":
                 emit_event("result", status=status, result=reply, session_id=session_path.stem,
-                           usage_tokens=agent.context.cumulative_tokens)
+                           usage_tokens=agent.context.cumulative_tokens,
+                           task_id=journal.task_id if journal else None)
             else:
                 print(reply)
             if status != "complete":
                 raise SystemExit(1)
         except Exception as exc:
+            if journal:
+                journal.rollback()
             if args.output_format == "json":
                 print(json.dumps({"error": str(exc)}, ensure_ascii=False))
             elif args.output_format == "stream-json":
@@ -553,8 +580,17 @@ def main() -> None:
     if args.goal:
         if args.mode == "default":
             console.print("[dim]提示：goal 模式建议配合 --mode accept-edits，否则每次写操作都会停下等确认[/dim]")
-        if not run_goal_mode(agent, args.goal):
-            raise SystemExit(1)
+        if args.task_id:
+            agent.messages = journal.recover_messages()
+            if agent.messages and agent.messages[-1]["role"] == "user":
+                agent.run_turn("", resume_pending=True)
+        try:
+            if not run_goal_mode(agent, args.goal):
+                raise SystemExit(1)
+        except Exception:
+            if journal:
+                journal.rollback()
+            raise
         return
 
     if args.resume:

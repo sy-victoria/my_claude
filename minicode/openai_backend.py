@@ -6,8 +6,9 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Iterator
 
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -67,6 +68,9 @@ class OpenAIChatAdapter:
         self.timeout = timeout
 
     def create(self, **kwargs: Any) -> Any:
+        return self._parse_response(self._request(kwargs, streaming=False))
+
+    def _request(self, kwargs: dict[str, Any], streaming: bool) -> Any:
         tools = [{"type": "function", "function": {
             "name": spec["name"], "description": spec.get("description", ""),
             "parameters": spec["input_schema"]}} for spec in kwargs.get("tools", [])]
@@ -74,20 +78,38 @@ class OpenAIChatAdapter:
                    "messages": _to_openai_messages(kwargs["system"], kwargs["messages"])}
         if tools:
             payload["tools"] = tools
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if streaming:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
+        headers = {"Content-Type": "application/json",
+                   "Accept": "text/event-stream" if streaming else "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(self.base_url + "/chat/completions",
                                          json.dumps(payload, ensure_ascii=False).encode(), headers=headers)
         try:
-            with urllib.request.build_opener(_NoRedirect()).open(
-                request, timeout=kwargs.get("timeout", self.timeout)) as response:
-                body = response.read(10_000_001)
+            response = urllib.request.build_opener(_NoRedirect()).open(
+                request, timeout=kwargs.get("timeout", self.timeout))
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"模型端点 HTTP {exc.code}") from exc
+        if streaming:
+            return response
+        with response:
+            body = response.read(10_000_001)
         if len(body) > 10_000_000:
             raise ValueError("模型响应超过 10 MB")
-        data = json.loads(body)
+        return json.loads(body)
+
+    @contextmanager
+    def stream(self, **kwargs: Any) -> Iterator[Any]:
+        response = self._request(kwargs, streaming=True)
+        try:
+            yield _OpenAIStream(response, self._parse_response)
+        finally:
+            response.close()
+
+    @staticmethod
+    def _parse_response(data: dict[str, Any]) -> Any:
         choices = data.get("choices", [])
         if not choices:
             raise ValueError("模型响应缺少 choices")
@@ -108,3 +130,58 @@ class OpenAIChatAdapter:
         usage_obj = SimpleNamespace(input_tokens=usage.get("prompt_tokens", 0),
                                     output_tokens=usage.get("completion_tokens", 0))
         return SimpleNamespace(stop_reason=reason, content=blocks, usage=usage_obj)
+
+
+class _OpenAIStream:
+    """Collect streamed tool arguments while exposing text deltas immediately."""
+
+    def __init__(self, response: Any, parser: Any) -> None:
+        self.response = response
+        self.parser = parser
+        self.text_stream = self._iter_text()
+        self._final: Any | None = None
+
+    def _iter_text(self) -> Iterator[str]:
+        text_parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        usage: dict[str, Any] = {}
+        size = 0
+        for raw in self.response:
+            size += len(raw)
+            if size > 10_000_000:
+                raise ValueError("模型流式响应超过 10 MB")
+            line = raw.decode("utf-8").strip()
+            if not line.startswith("data:"):
+                continue
+            value = line[5:].strip()
+            if value == "[DONE]":
+                break
+            event = json.loads(value)
+            usage = event.get("usage") or usage
+            for choice in event.get("choices") or []:
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta") or {}
+                if delta.get("content"):
+                    part = delta["content"]
+                    text_parts.append(part)
+                    yield part
+                for fragment in delta.get("tool_calls") or []:
+                    index = fragment["index"]
+                    call = calls.setdefault(index, {"id": "", "type": "function",
+                                                   "function": {"name": "", "arguments": ""}})
+                    call["id"] += fragment.get("id") or ""
+                    function = fragment.get("function") or {}
+                    call["function"]["name"] += function.get("name") or ""
+                    call["function"]["arguments"] += function.get("arguments") or ""
+        if finish_reason is None:
+            raise ValueError("模型流式响应未结束")
+        self._final = self.parser({"choices": [{"finish_reason": finish_reason,
+                                                "message": {"content": "".join(text_parts),
+                                                            "tool_calls": [calls[i] for i in sorted(calls)]}}],
+                                   "usage": usage})
+
+    def get_final_message(self) -> Any:
+        if self._final is None:
+            raise RuntimeError("流式响应尚未完整消费")
+        return self._final

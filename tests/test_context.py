@@ -4,7 +4,38 @@ from types import SimpleNamespace
 
 from minicode import config
 from minicode.agent import Agent
-from minicode.context import ContextTracker, merge_summary, split_for_compaction
+from minicode.context import ContextTracker, merge_summary, split_for_compaction, trim_tool_result
+
+
+def test_tool_result_budget_keeps_requery_hint():
+    result = trim_tool_result("x" * 20_000, 0)
+    assert len(result) < 13_000
+    assert "分页重试" in result
+
+
+def test_project_memory_refreshes_at_next_turn(tmp_path):
+    from types import SimpleNamespace
+
+    from minicode.agent import Agent
+    from minicode.permissions import PermissionManager
+
+    seen = []
+
+    class Client:
+        def create(self, **kwargs):
+            seen.append(kwargs["system"])
+            return SimpleNamespace(stop_reason="end_turn",
+                                   content=[SimpleNamespace(type="text", text="ok")])
+
+    memory = tmp_path / "AGENT.md"
+    memory.write_text("第一版规则", encoding="utf-8")
+    agent = Agent(client=Client(), permissions=PermissionManager(cwd=tmp_path))
+    agent.run_turn("one")
+    memory.write_text("第二版规则", encoding="utf-8")
+    agent.run_turn("two")
+    assert "第一版规则" in seen[0]
+    assert "第二版规则" in seen[1]
+    assert "第一版规则" not in seen[1]
 from minicode.tools.read_file import read_file_tool
 
 

@@ -17,6 +17,18 @@ from typing import Any
 
 from minicode import config
 
+MAX_TOOL_RESULT_CHARS = 12_000
+MIN_TOOL_RESULT_CHARS = 2_000
+
+
+def trim_tool_result(value: str, used_tokens: int) -> str:
+    """Bound every tool result before it enters model history."""
+    remaining = max(0, config.CONTEXT_WINDOW_TOKENS - used_tokens - config.MAX_TOKENS)
+    limit = min(MAX_TOOL_RESULT_CHARS, max(MIN_TOOL_RESULT_CHARS, remaining * 2))
+    if len(value) <= limit:
+        return value
+    return value[:limit] + f"\n[结果已截断：共 {len(value)} 字符；请缩小查询范围或分页重试]"
+
 # 总结指令：结构模仿 Claude Code compaction prompt 的骨架（它的完整版有
 # 几十行，分更多小节）。要求模型保留"能让工作继续下去"的信息。
 SUMMARY_INSTRUCTION = """\

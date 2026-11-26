@@ -17,3 +17,6 @@ wheels/
 
 # macOS
 .DS_Store
+
+# local benchmark worktrees and predictions
+.eval-output/

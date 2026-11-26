@@ -1,6 +1,7 @@
 """task 子 agent 的测试：工具集受限、禁递归、轮数上限、结果回传。"""
 
 from types import SimpleNamespace
+import json
 
 from minicode.agent import Agent
 from minicode.permissions import PermissionManager
@@ -39,7 +40,8 @@ def test_task_returns_subagent_final_text(monkeypatch):
 
     result = task_tool.run({"description": "调查", "prompt": "权限检查在哪里？"})
 
-    assert result == "调查结论：在 permissions.py"
+    assert json.loads(result) == {"status": "complete", "summary": "调查结论：在 permissions.py",
+                                  "changed_files": [], "unresolved": []}
     # 子 agent 的中间消息留在它自己的 messages 里
     assert len(fake_sub.messages) == 2
 

@@ -14,6 +14,7 @@
 """
 
 import os
+import json
 from contextvars import ContextVar
 from typing import Any, Callable
 
@@ -61,6 +62,8 @@ def _make_subagent(mode: str = "explore", max_loops: int = MAX_SUB_LOOPS) -> Any
         api_timeout_seconds=parent.api_timeout_seconds if parent is not None else 90,
         max_turn_seconds=parent.max_turn_seconds if parent is not None else 600,
         max_tool_calls=parent.max_tool_calls if parent is not None else 100,
+        journal=parent.journal if parent is not None else None,
+        checkpoint_messages=False,
         on_tool_call=on_subagent_tool_call,
         permissions=PermissionManager(mode="default", cwd=parent.permissions.cwd if parent is not None else None,
                                       rules=parent.permissions.rules if parent is not None else load_settings()["permissions"],
@@ -83,7 +86,29 @@ def _run(tool_input: dict) -> str:
 
     # 子 agent 跑完整的 agent 循环；它的几十条中间消息都留在它自己的
     # messages 里，主 agent 只收到这一段最终文本。
-    return sub_agent.run_turn(prompt)
+    summary = sub_agent.run_turn(prompt)
+    changed = set()
+    successful = set()
+    for message in getattr(sub_agent, "messages", []):
+        if message.get("role") != "user" or not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if block.get("type") == "tool_result" and str(block.get("content", "")).startswith(
+                    ("已修改", "已创建", "已覆盖")):
+                successful.add(block.get("tool_use_id"))
+    for message in getattr(sub_agent, "messages", []):
+        if message.get("role") != "assistant" or not isinstance(message.get("content"), list):
+            continue
+        for block in message["content"]:
+            if (block.get("type") == "tool_use" and block.get("id") in successful
+                    and block.get("name") in {"edit_file", "write_file"}):
+                path = block.get("input", {}).get("path")
+                if isinstance(path, str):
+                    changed.add(path)
+    complete = getattr(sub_agent, "last_stop_reason", None) in {"end_turn", "stop_sequence"}
+    return json.dumps({"status": "complete" if complete else "incomplete",
+                       "summary": summary, "changed_files": sorted(changed),
+                       "unresolved": [] if complete else ["子任务未确认完成"]}, ensure_ascii=False)
 
 
 task_tool = Tool(
