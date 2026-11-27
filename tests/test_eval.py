@@ -2,7 +2,7 @@
 
 import json
 
-from minicode.eval import compare, export_patch, load_instances, run_fault_injection, summarize
+from minicode.eval import compare, export_patch, load_instances, prepare_checkout, run_fault_injection, summarize
 
 
 def test_pinned_manifest_selects_only_requested_instances(tmp_path):
@@ -55,3 +55,21 @@ def test_compare_rejects_mismatched_task_sets():
 
     with pytest.raises(ValueError, match="实例 ID"):
         compare([{"instance_id": "a"}], [{"instance_id": "b"}], set(), set())
+
+
+def test_prepared_checkout_reuses_only_clean_matching_commit(tmp_path):
+    import subprocess
+    import pytest
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "a.py").write_text("old")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "-qm", "base"], cwd=repo, check=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    prepare_checkout({"base_commit": head}, repo)
+    (repo / "a.py").write_text("changed")
+    with pytest.raises(ValueError, match="未完成改动"):
+        prepare_checkout({"base_commit": head}, repo)

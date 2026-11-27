@@ -43,7 +43,13 @@ def load_instances(manifest: dict[str, Any], dataset_json: Path | None = None) -
 def prepare_checkout(instance: dict[str, Any], destination: Path) -> None:
     """Fetch only the base commit so future fix commits are absent from local history."""
     if destination.exists():
-        raise FileExistsError(f"评测工作区已存在：{destination}")
+        if not (destination / ".git").exists():
+            raise FileExistsError(f"评测工作区已存在且不是 Git 仓库：{destination}")
+        if _git(["rev-parse", "HEAD"], destination).strip() != instance["base_commit"]:
+            raise ValueError(f"评测工作区 base_commit 不匹配：{destination}")
+        if _git(["status", "--porcelain"], destination).strip():
+            raise ValueError(f"评测工作区有未完成改动，请先检查：{destination}")
+        return
     destination.mkdir(parents=True)
     try:
         _git(["init", "-q"], destination)
@@ -63,10 +69,19 @@ def export_patch(destination: Path) -> str:
 def run_sample(manifest: dict[str, Any], output: Path, provider: str, model: str,
                dataset_json: Path | None = None, base_url: str | None = None) -> None:
     output.mkdir(parents=True, exist_ok=True)
-    predictions: list[dict[str, str]] = []
-    metrics: list[dict[str, Any]] = []
+    prediction_path = output / "predictions.json"
+    metric_path = output / "metrics.json"
+    predictions: list[dict[str, str]] = (json.loads(prediction_path.read_text(encoding="utf-8"))
+                                         if prediction_path.exists() else [])
+    metrics: list[dict[str, Any]] = (json.loads(metric_path.read_text(encoding="utf-8"))
+                                    if metric_path.exists() else [])
+    completed = {row["instance_id"] for row in predictions} & {row["instance_id"] for row in metrics}
+    if any(row["model_name_or_path"] != model for row in predictions):
+        raise ValueError("已有预测文件使用不同模型，请指定新的输出目录")
     for instance in load_instances(manifest, dataset_json):
         instance_id = instance["instance_id"]
+        if instance_id in completed:
+            continue
         checkout = output / "worktrees" / instance_id
         prepare_checkout(instance, checkout)
         key_name = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
@@ -94,10 +109,9 @@ def run_sample(manifest: dict[str, Any], output: Path, provider: str, model: str
                         "usage_tokens": agent.context.cumulative_tokens,
                         "tool_calls": len(calls), "elapsed_seconds": round(time.monotonic() - started, 3),
                         "task_id": journal.task_id, "answer": answer})
-        (output / "predictions.json").write_text(json.dumps(predictions, ensure_ascii=False, indent=2),
-                                                   encoding="utf-8")
-        (output / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2),
-                                               encoding="utf-8")
+        prediction_path.write_text(json.dumps(predictions, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+        metric_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def summarize(metrics: list[dict[str, Any]], resolved_ids: set[str]) -> dict[str, Any]:
